@@ -1,0 +1,52 @@
+{
+  "version": 8,
+  "name": "Carbon Neon Road Only",
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "tiles": [
+        "https://tile.openstreetmap.jp/data/planet/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#0B0C10"
+      }
+    },
+    {
+      "id": "road_minor",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        ["==", ["geometry-type"], "LineString"],
+        ["match", ["get", "class"], ["street", "service", "track", "residential", "path", "footway"], true, false]
+      ],
+      "paint": {
+        "line-color": "#45A29E",
+        "line-width": 1.5
+      }
+    },
+    {
+      "id": "road_major",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        ["==", ["geometry-type"], "LineString"],
+        ["match", ["get", "class"], ["street", "service", "track", "residential", "path", "footway"], false, true]
+      ],
+      "paint": {
+        "line-color": "#66FCF1",
+        "line-width": 3
+      }
+    }
+  ]
+}
