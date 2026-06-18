@@ -1137,26 +1137,26 @@ fun DashboardLandscapeLayout(
                     .weight(1.0f)
                     .fillMaxHeight()
                     .zIndex(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Oversized Speedometer Card
+                // Oversized Speedometer Card (Slightly compact in landscape)
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(105.dp)
+                        .height(78.dp)
                         .clickable { onToggleUnit() },
                     colors = CardDefaults.cardColors(containerColor = SurfaceCard),
                     border = BorderStroke(1.5.dp, highlightColor),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Column(
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
                             text = "SPEEDOMETER",
-                            style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold),
+                            style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold, fontSize = 10.sp),
                             color = MutedGrey
                         )
                         Row(
@@ -1165,24 +1165,24 @@ fun DashboardLandscapeLayout(
                         ) {
                             Text(
                                 text = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
-                                style = MaterialTheme.typography.displayMedium.copy(fontSize = 46.sp, color = highlightColor),
+                                style = MaterialTheme.typography.displayMedium.copy(fontSize = 32.sp, color = highlightColor),
                                 maxLines = 1,
                                 softWrap = false
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = if (isMetric) "km/h" else "mph",
-                                style = MaterialTheme.typography.labelMedium.copy(color = MutedGrey),
-                                modifier = Modifier.padding(bottom = 6.dp)
+                                style = MaterialTheme.typography.labelMedium.copy(color = MutedGrey, fontSize = 11.sp),
+                                modifier = Modifier.padding(bottom = 3.dp)
                             )
                         }
                     }
                 }
 
-                // Row for LEAN and 1000m MAX LEAN
+                // Row for LEAN and 1000m MAX LEAN (More compact)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val absLeanVal = abs(currentLean)
                     val leanProgress = ((absLeanVal - 30f) / 10f).coerceIn(0f, 1f)
@@ -1195,7 +1195,8 @@ fun DashboardLandscapeLayout(
                         color = PureWhite,
                         containerColor = lerp(SurfaceCard, AlertRed, leanProgress),
                         modifier = Modifier.weight(1f),
-                        weight = FontWeight(700 + (leanProgress * 200).toInt())
+                        weight = FontWeight(700 + (leanProgress * 200).toInt()),
+                        height = 60.dp
                     )
                     
                     MetricCard(
@@ -1205,11 +1206,12 @@ fun DashboardLandscapeLayout(
                         color = PureWhite,
                         containerColor = lerp(SurfaceCard, AlertRed, max1000mProgress),
                         modifier = Modifier.weight(1f),
-                        weight = FontWeight(700 + (max1000mProgress * 200).toInt())
+                        weight = FontWeight(700 + (max1000mProgress * 200).toInt()),
+                        height = 60.dp
                     )
                 }
 
-                // Session details card
+                // Session details card (Highly compact with SpaceAround/SpaceEvenly layout)
                 Card(
                     colors = CardDefaults.cardColors(containerColor = SurfaceCard),
                     border = BorderStroke(1.dp, BorderDivider),
@@ -1219,13 +1221,13 @@ fun DashboardLandscapeLayout(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.SpaceAround
                     ) {
-                        HistoryRow("Session Max", "L: ${abs(sessionMaxLeft).toInt()}° / R: ${sessionMaxRight.toInt()}°", PureWhite) { service.resetSessionLean() }
-                        HistoryRow("Curves Driven", "${corners.size}", PureWhite) { service.resetCornerCount() }
-                        HistoryRow("Wheelie Angle", "${sessionMaxPitch.toInt()}°", PureWhite) { service.resetSessionPitch() }
-                        HistoryRow("All-Time Max", "L: ${abs(allTimeMaxLeft).toInt()}° / R: ${allTimeMaxRight.toInt()}°", PureWhite)
+                        HistoryRow("Session Max", "L: ${abs(sessionMaxLeft).toInt()}° / R: ${sessionMaxRight.toInt()}°", PureWhite, compact = true) { service.resetSessionLean() }
+                        HistoryRow("Curves Driven", "${corners.size}", PureWhite, compact = true) { service.resetCornerCount() }
+                        HistoryRow("Wheelie Angle", "${sessionMaxPitch.toInt()}°", PureWhite, compact = true) { service.resetSessionPitch() }
+                        HistoryRow("All-Time Max", "L: ${abs(allTimeMaxLeft).toInt()}° / R: ${allTimeMaxRight.toInt()}°", PureWhite, compact = true)
                     }
                 }
             }
@@ -1629,7 +1631,13 @@ fun LeanHorizonIndicator(
 }
 
 @Composable
-fun HistoryRow(label: String, value: String, color: Color, onReset: (() -> Unit)? = null) {
+fun HistoryRow(
+    label: String,
+    value: String,
+    color: Color,
+    compact: Boolean = false,
+    onReset: (() -> Unit)? = null
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1637,7 +1645,7 @@ fun HistoryRow(label: String, value: String, color: Color, onReset: (() -> Unit)
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.bodyLarge,
+            style = if (compact) MaterialTheme.typography.bodyLarge.copy(fontSize = 12.sp) else MaterialTheme.typography.bodyLarge,
             color = MutedGrey,
             maxLines = 1,
             softWrap = false,
@@ -1649,7 +1657,7 @@ fun HistoryRow(label: String, value: String, color: Color, onReset: (() -> Unit)
             style = MaterialTheme.typography.bodyLarge.copy(
                 fontFamily = Rajdhani,
                 fontWeight = FontWeight.Bold,
-                fontSize = 15.sp
+                fontSize = if (compact) 13.sp else 15.sp
             ),
             color = color,
             maxLines = 1,
@@ -1660,17 +1668,17 @@ fun HistoryRow(label: String, value: String, color: Color, onReset: (() -> Unit)
         if (onReset != null) {
             IconButton(
                 onClick = onReset,
-                modifier = Modifier.size(30.dp)
+                modifier = Modifier.size(if (compact) 22.dp else 30.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Refresh,
                     contentDescription = "Reset",
                     tint = MutedCyan,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(if (compact) 12.dp else 16.dp)
                 )
             }
         } else {
-            Spacer(modifier = Modifier.width(30.dp))
+            Spacer(modifier = Modifier.width(if (compact) 22.dp else 30.dp))
         }
     }
 }
@@ -1684,11 +1692,12 @@ fun MetricCard(
     color: Color = PureWhite,
     containerColor: Color = SurfaceCard,
     weight: FontWeight = FontWeight.Bold,
+    height: androidx.compose.ui.unit.Dp = 80.dp,
     onClick: (() -> Unit)? = null
 ) {
     Card(
         modifier = modifier
-            .height(80.dp)
+            .height(height)
             .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
         colors = CardDefaults.cardColors(containerColor = containerColor),
         border = BorderStroke(1.dp, BorderDivider),
@@ -1701,7 +1710,7 @@ fun MetricCard(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelMedium.copy(fontSize = if (height < 70.dp) 10.sp else 12.sp),
                 color = MutedGrey,
                 maxLines = 1,
                 softWrap = false
@@ -1710,7 +1719,7 @@ fun MetricCard(
                 Text(
                     text = value,
                     style = MaterialTheme.typography.displaySmall.copy(
-                        fontSize = 24.sp,
+                        fontSize = if (height < 70.dp) 18.sp else 24.sp,
                         fontWeight = weight,
                         fontFamily = Rajdhani
                     ),
@@ -1721,9 +1730,9 @@ fun MetricCard(
                 if (unit.isNotEmpty()) {
                     Text(
                         text = unit,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = if (height < 70.dp) 8.sp else 9.sp),
                         color = MutedGrey,
-                        modifier = Modifier.padding(bottom = 4.dp, start = 2.dp)
+                        modifier = Modifier.padding(bottom = if (height < 70.dp) 2.dp else 4.dp, start = 2.dp)
                     )
                 }
             }
