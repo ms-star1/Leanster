@@ -1645,7 +1645,7 @@ fun HistoryRow(
     ) {
         Text(
             text = label,
-            style = if (compact) MaterialTheme.typography.bodyLarge.copy(fontSize = 12.sp) else MaterialTheme.typography.bodyLarge,
+            style = if (compact) MaterialTheme.typography.bodyLarge.copy(fontSize = 11.sp) else MaterialTheme.typography.bodyLarge,
             color = MutedGrey,
             maxLines = 1,
             softWrap = false,
@@ -1657,7 +1657,7 @@ fun HistoryRow(
             style = MaterialTheme.typography.bodyLarge.copy(
                 fontFamily = Rajdhani,
                 fontWeight = FontWeight.Bold,
-                fontSize = if (compact) 13.sp else 15.sp
+                fontSize = if (compact) 11.sp else 15.sp
             ),
             color = color,
             maxLines = 1,
