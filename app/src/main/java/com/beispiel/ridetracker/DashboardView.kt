@@ -1225,6 +1225,7 @@ fun DashboardLandscapeLayout(
                         HistoryRow("Session Max", "L: ${abs(sessionMaxLeft).toInt()}° / R: ${sessionMaxRight.toInt()}°", PureWhite) { service.resetSessionLean() }
                         HistoryRow("Curves Driven", "${corners.size}", PureWhite) { service.resetCornerCount() }
                         HistoryRow("Wheelie Angle", "${sessionMaxPitch.toInt()}°", PureWhite) { service.resetSessionPitch() }
+                        HistoryRow("All-Time Max", "L: ${abs(allTimeMaxLeft).toInt()}° / R: ${allTimeMaxRight.toInt()}°", PureWhite)
                     }
                 }
             }
