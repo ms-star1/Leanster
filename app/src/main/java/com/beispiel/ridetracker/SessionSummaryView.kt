@@ -11,8 +11,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -164,8 +164,8 @@ fun SessionHistoryCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-                val timeFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                val dateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
+                val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
                 val dateStr = dateFormat.format(java.util.Date(session.startTime))
                 val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
                 val endTimeStr = if (session.endTime > 0L) timeFormat.format(java.util.Date(session.endTime)) else "--:--"
@@ -183,7 +183,7 @@ fun SessionHistoryCard(
                 Icon(Icons.Default.Share, contentDescription = "Export", tint = highlightColor.copy(alpha = 0.8f))
             }
             
-            Icon(Icons.Default.KeyboardArrowRight, contentDescription = null, tint = mutedHighlightColor)
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = mutedHighlightColor)
         }
     }
 }
@@ -206,93 +206,134 @@ fun SessionSummaryOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.7f))
-            .clickable(enabled = true, onClick = onClose),
-        contentAlignment = Alignment.Center
+            .background(DeepCarbon)
     ) {
-        Card(
+        Column(
             modifier = Modifier
-                .fillMaxWidth(0.9f)
-                .fillMaxHeight(0.85f)
-                .clickable(enabled = false, onClick = {}),
-            colors = CardDefaults.cardColors(containerColor = DeepCarbon),
-            shape = RoundedCornerShape(12.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider)
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = "SESSION DETAILS",
-                        style = MaterialTheme.typography.titleLarge.copy(fontFamily = Inter),
-                        color = highlightColor
-                    )
-                    IconButton(onClick = onClose) {
+                    IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
                         Text("✕", color = PureWhite, style = MaterialTheme.typography.titleLarge)
                     }
+                    Text(
+                        text = "SESSION DETAILS",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontFamily = Inter,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        ),
+                        color = highlightColor
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-                val timeFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
-                
+                val dateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
+                val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
                 val dateStr = dateFormat.format(java.util.Date(session.startTime))
                 val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
                 val endTimeStr = if (session.endTime > 0L) timeFormat.format(java.util.Date(session.endTime)) else "--:--"
-                
-                Text("Date: $dateStr", style = MaterialTheme.typography.bodyLarge, color = MutedGrey)
-                Text("$startTimeStr - $endTimeStr", style = MaterialTheme.typography.bodyLarge.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold), color = PureWhite)
-                
-                Spacer(modifier = Modifier.height(16.dp))
 
-                val totalDistanceRaw = session.points.sumOf { it.distanceDelta } / 1000.0 // km
-                val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
-                val maxSpeedRaw = session.points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
-                val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    modifier = Modifier.padding(end = 4.dp)
+                ) {
+                    Text(
+                        text = "$dateStr",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                        color = PureWhite
+                    )
+                    Text(
+                        text = "$startTimeStr - $endTimeStr",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MutedGrey
+                    )
+                }
+            }
 
-                val configuration = LocalConfiguration.current
-                val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            Spacer(modifier = Modifier.height(12.dp))
 
-                if (isLandscape) {
-                    Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                            SummaryStatsGrid(totalDistance, maxSpeed, session.maxLeanLeft, session.maxLeanRight, isMetric, highlightColor)
-                        }
-                        Column(modifier = Modifier.weight(1.5f).verticalScroll(rememberScrollState())) {
-                            SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor)
-                        }
-                    }
-                } else {
+            val totalDistanceRaw = session.points.sumOf { it.distanceDelta } / 1000.0 // km
+            val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
+            val maxSpeedRaw = session.points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
+            val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
+
+            val configuration = LocalConfiguration.current
+            val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
                     Column(
                         modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        SummaryStatsGrid(totalDistance, maxSpeed, session.maxLeanLeft, session.maxLeanRight, isMetric, highlightColor)
-                        Spacer(modifier = Modifier.height(16.dp))
+                        SummaryStatsGrid(
+                            totalDistance = totalDistance,
+                            maxSpeed = maxSpeed,
+                            maxLeanLeft = session.maxLeanLeft,
+                            maxLeanRight = session.maxLeanRight,
+                            maxPitch = session.maxPitch,
+                            cornersCount = session.corners.size,
+                            isMetric = isMetric,
+                            highlightColor = highlightColor,
+                            isLandscape = true
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1.5f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
                         SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor)
                     }
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Button(
-                    onClick = onClose,
-                    colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(12.dp)
+            } else {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    Text("CLOSE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    SummaryStatsGrid(
+                        totalDistance = totalDistance,
+                        maxSpeed = maxSpeed,
+                        maxLeanLeft = session.maxLeanLeft,
+                        maxLeanRight = session.maxLeanRight,
+                        maxPitch = session.maxPitch,
+                        cornersCount = session.corners.size,
+                        isMetric = isMetric,
+                        highlightColor = highlightColor,
+                        isLandscape = false
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor)
                 }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = onClose,
+                colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("CLOSE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -315,7 +356,7 @@ fun SessionSummaryScreen(
         else -> MutedCyan
     }
 
-    var showDiscardDialog by remember { mutableStateOf(false) }
+    var showDiscardDialog by remember { mutableStateOf(value = false) }
 
     if (showDiscardDialog) {
         AlertDialog(
@@ -339,102 +380,149 @@ fun SessionSummaryScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center
+            .background(DeepCarbon)
     ) {
-        Card(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.85f),
-            colors = CardDefaults.cardColors(containerColor = DeepCarbon.copy(alpha = 0.95f)),
-            shape = RoundedCornerShape(12.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider)
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
                     text = "SESSION SUMMARY",
-                    style = MaterialTheme.typography.headlineMedium.copy(fontFamily = Inter),
-                    color = highlightColor,
-                    modifier = Modifier.padding(bottom = 8.dp)
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontFamily = Inter,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    ),
+                    color = highlightColor
                 )
 
                 val startTime = points.firstOrNull()?.timestamp ?: 0L
                 val endTime = points.lastOrNull()?.timestamp ?: 0L
                 
-                val summaryDateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-                val summaryTimeFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                val summaryDateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
+                val summaryTimeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
                 
                 val summaryDateStr = if (startTime > 0L) summaryDateFormat.format(java.util.Date(startTime)) else ""
                 val summaryStartTimeStr = if (startTime > 0L) summaryTimeFormat.format(java.util.Date(startTime)) else "--:--"
                 val summaryEndTimeStr = if (endTime > 0L) summaryTimeFormat.format(java.util.Date(endTime)) else "--:--"
                 
                 if (summaryDateStr.isNotEmpty()) {
-                    Text("Date: $summaryDateStr", style = MaterialTheme.typography.bodyLarge, color = MutedGrey)
-                    Text("$summaryStartTimeStr - $summaryEndTimeStr", style = MaterialTheme.typography.bodyLarge.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold), color = PureWhite)
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-
-                val totalDistanceRaw = points.sumOf { it.distanceDelta } / 1000.0 // km
-                val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
-                val maxSpeedRaw = points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
-                val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
-                val maxLeft = points.minByOrNull { it.leanAngle }?.leanAngle ?: 0f
-                val maxRight = points.maxByOrNull { it.leanAngle }?.leanAngle ?: 0f
-
-                val configuration = LocalConfiguration.current
-                val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-                if (isLandscape) {
-                    Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                            SummaryStatsGrid(totalDistance, maxSpeed, maxLeft, maxRight, isMetric, highlightColor)
-                        }
-                        Column(modifier = Modifier.weight(1.5f).verticalScroll(rememberScrollState())) {
-                            SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor)
-                        }
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        modifier = Modifier.padding(end = 4.dp)
+                    ) {
+                        Text(
+                            text = "$summaryDateStr",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = PureWhite
+                        )
+                        Text(
+                            text = "$summaryStartTimeStr - $summaryEndTimeStr",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MutedGrey
+                        )
                     }
-                } else {
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            val totalDistanceRaw = points.sumOf { it.distanceDelta } / 1000.0 // km
+            val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
+            val maxSpeedRaw = points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
+            val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
+            val maxLeft = points.minByOrNull { it.leanAngle }?.leanAngle ?: 0f
+            val maxRight = points.maxByOrNull { it.leanAngle }?.leanAngle ?: 0f
+            val maxPitch = points.maxByOrNull { it.pitchAngle }?.pitchAngle ?: 0f
+
+            val configuration = LocalConfiguration.current
+            val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .verticalScroll(rememberScrollState())
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        SummaryStatsGrid(totalDistance, maxSpeed, maxLeft, maxRight, isMetric, highlightColor)
-                        Spacer(modifier = Modifier.height(16.dp))
+                        SummaryStatsGrid(
+                            totalDistance = totalDistance,
+                            maxSpeed = maxSpeed,
+                            maxLeanLeft = maxLeft,
+                            maxLeanRight = maxRight,
+                            maxPitch = maxPitch,
+                            cornersCount = corners.size,
+                            isMetric = isMetric,
+                            highlightColor = highlightColor
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1.5f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
                         SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor)
                     }
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Bottom Buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            } else {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    Button(
-                        onClick = { showDiscardDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider)
-                    ) {
-                        Text("DISCARD", style = MaterialTheme.typography.labelLarge, color = PureWhite)
-                    }
+                    SummaryStatsGrid(
+                        totalDistance = totalDistance,
+                        maxSpeed = maxSpeed,
+                        maxLeanLeft = maxLeft,
+                        maxLeanRight = maxRight,
+                        maxPitch = maxPitch,
+                        cornersCount = corners.size,
+                        isMetric = isMetric,
+                        highlightColor = highlightColor
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor)
+                }
+            }
 
-                    Button(
-                        onClick = onSave,
-                        colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("SAVE SESSION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Bottom Buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { showDiscardDialog = false; onDiscard() },
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider)
+                ) {
+                    Text("DISCARD", style = MaterialTheme.typography.labelLarge, color = PureWhite)
+                }
+
+                Button(
+                    onClick = onSave,
+                    colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("SAVE SESSION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -447,23 +535,28 @@ fun SummaryStatCard(
     value: String,
     unit: String,
     modifier: Modifier = Modifier,
-    color: Color = PureWhite
+    color: Color = PureWhite,
+    compact: Boolean = false
 ) {
     Card(
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = SurfaceCard),
         border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(if (compact) 8.dp else 12.dp)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(if (compact) 6.dp else 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = MutedGrey)
+            Text(
+                label,
+                style = if (compact) MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp) else MaterialTheme.typography.labelSmall,
+                color = MutedGrey
+            )
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = value,
-                    style = MaterialTheme.typography.titleLarge.copy(
+                    style = (if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge).copy(
                         fontFamily = Rajdhani,
                         fontWeight = FontWeight.Bold
                     ),
@@ -471,9 +564,9 @@ fun SummaryStatCard(
                 )
                 Text(
                     text = unit,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = if (compact) 9.sp else 11.sp),
                     color = color,
-                    modifier = Modifier.padding(bottom = 3.dp, start = 1.dp)
+                    modifier = Modifier.padding(bottom = if (compact) 1.dp else 3.dp, start = 1.dp)
                 )
             }
         }
@@ -490,16 +583,16 @@ fun TelemetryGraph(
 ) {
     if (points.isEmpty()) return
 
-    var scaleX by remember { mutableStateOf(1f) }
-    var offsetX by remember { mutableStateOf(0f) }
-    var width by remember { mutableStateOf(0f) }
+    var scaleX by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var width by remember { mutableFloatStateOf(0f) }
 
     val totalDurationMs = if (points.size > 1) (points.last().timestamp - points.first().timestamp).toFloat() else 0f
     val totalDurationSec = totalDurationMs / 1000f
 
     // Calculate visible time window
-    val startFract = if (scaleX > 1f && width > 0f) (-offsetX / (width * scaleX)).coerceIn(0f, 1f) else 0f
-    val endFract = if (scaleX > 1f && width > 0f) ((-offsetX + width) / (width * scaleX)).coerceIn(0f, 1f) else 1f
+    val startFract = if ((scaleX > 1f) && (width > 0f)) (-offsetX / (width * scaleX)).coerceIn(0f, 1f) else 0f
+    val endFract = if ((scaleX > 1f) && (width > 0f)) ((-offsetX + width) / (width * scaleX)).coerceIn(0f, 1f) else 1f
 
     val startSec = startFract * totalDurationSec
     val endSec = endFract * totalDurationSec
@@ -648,49 +741,80 @@ fun SummaryStatsGrid(
     maxSpeed: Double,
     maxLeanLeft: Float,
     maxLeanRight: Float,
+    maxPitch: Float,
+    cornersCount: Int,
     isMetric: Boolean,
-    highlightColor: Color
+    highlightColor: Color,
+    isLandscape: Boolean = false
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        SummaryStatCard(
-            label = "DISTANCE",
-            value = java.util.Locale.getDefault().let { String.format(it, "%.2f", totalDistance) },
-            unit = if (isMetric) "km" else "mi",
-            modifier = Modifier.weight(1f),
-            color = PureWhite
-        )
-        SummaryStatCard(
-            label = "TOP SPEED",
-            value = maxSpeed.toInt().toString(),
-            unit = if (isMetric) "km/h" else "mph",
-            modifier = Modifier.weight(1f),
-            color = highlightColor
-        )
-    }
+    val distanceStr = remember(totalDistance) { String.format(java.util.Locale.getDefault(), "%.2f", totalDistance) }
 
-    Spacer(modifier = Modifier.height(8.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)
+        ) {
+            SummaryStatCard(
+                label = "DISTANCE",
+                value = distanceStr,
+                unit = if (isMetric) "km" else "mi",
+                modifier = Modifier.weight(1f),
+                color = PureWhite,
+                compact = isLandscape
+            )
+            SummaryStatCard(
+                label = "TOP SPEED",
+                value = maxSpeed.toInt().toString(),
+                unit = if (isMetric) "km/h" else "mph",
+                modifier = Modifier.weight(1f),
+                color = highlightColor,
+                compact = isLandscape
+            )
+        }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        SummaryStatCard(
-            label = "MAX LEAN L",
-            value = abs(maxLeanLeft).toInt().toString(),
-            unit = "°",
-            modifier = Modifier.weight(1f),
-            color = AlertRed
-        )
-        SummaryStatCard(
-            label = "MAX LEAN R",
-            value = maxLeanRight.toInt().toString(),
-            unit = "°",
-            modifier = Modifier.weight(1f),
-            color = AlertRed
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)
+        ) {
+            SummaryStatCard(
+                label = "MAX LEAN L",
+                value = abs(maxLeanLeft).toInt().toString(),
+                unit = "°",
+                modifier = Modifier.weight(1f),
+                color = AlertRed,
+                compact = isLandscape
+            )
+            SummaryStatCard(
+                label = "MAX LEAN R",
+                value = maxLeanRight.toInt().toString(),
+                unit = "°",
+                modifier = Modifier.weight(1f),
+                color = AlertRed,
+                compact = isLandscape
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)
+        ) {
+            SummaryStatCard(
+                label = "WHEELIE ANGLE",
+                value = maxPitch.toInt().toString(),
+                unit = "°",
+                modifier = Modifier.weight(1f),
+                color = PureWhite,
+                compact = isLandscape
+            )
+            SummaryStatCard(
+                label = "CORNERS DRIVEN",
+                value = cornersCount.toString(),
+                unit = "",
+                modifier = Modifier.weight(1f),
+                color = highlightColor,
+                compact = isLandscape
+            )
+        }
     }
 }
 
@@ -752,7 +876,7 @@ fun SessionSummaryPortraitPreview() {
             latitude = 0.0,
             longitude = 0.0,
             speedKmh = 50.0 + i % 20,
-            leanAngle = (Math.sin(i / 10.0) * 30).toFloat(),
+            leanAngle = (kotlin.math.sin(i / 10.0) * 30).toFloat(),
             pitchAngle = 0f,
             distanceDelta = 10.0
         )
@@ -773,7 +897,7 @@ fun SessionSummaryLandscapePreview() {
             latitude = 0.0,
             longitude = 0.0,
             speedKmh = 50.0 + i % 20,
-            leanAngle = (Math.sin(i / 10.0) * 30).toFloat(),
+            leanAngle = (kotlin.math.sin(i / 10.0) * 30).toFloat(),
             pitchAngle = 0f,
             distanceDelta = 10.0
         )

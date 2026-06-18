@@ -1,60 +1,56 @@
 package com.beispiel.ridetracker
 
 import android.app.Activity as AndroidActivity
+import android.content.pm.ActivityInfo
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.view.WindowManager
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ScreenRotation
-import androidx.compose.ui.platform.LocalConfiguration
-import android.content.pm.ActivityInfo
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-
-import androidx.compose.material.icons.filled.Settings
-import android.app.Activity
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.width
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.beispiel.ridetracker.ui.theme.*
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.core.content.edit
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.center
-import androidx.compose.animation.core.*
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.tooling.preview.Preview
-import android.graphics.Paint
-import android.graphics.Typeface
-import java.util.Locale
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import com.beispiel.ridetracker.ui.theme.*
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -158,8 +154,8 @@ fun DashboardViewContentMock() {
 fun DashboardView(
     service: TelemetryService,
     isMetric: Boolean,
-    highlightColor: androidx.compose.ui.graphics.Color,
-    mutedHighlightColor: androidx.compose.ui.graphics.Color,
+    highlightColor: Color,
+    mutedHighlightColor: Color,
     highlightColorName: String,
     onColorChange: (String) -> Unit,
     onToggleUnit: () -> Unit,
@@ -169,8 +165,6 @@ fun DashboardView(
     hasPlayedStartupAnimation: Boolean = false,
     onStartupAnimationFinished: () -> Unit = {}
 ) {
-    val currentLean by service.currentLean.collectAsStateWithLifecycle()
-    val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
     val corners by service.detectedCorners.collectAsStateWithLifecycle()
     val allTimeMaxLeft by service.allTimeMaxLeft.collectAsStateWithLifecycle()
     val allTimeMaxRight by service.allTimeMaxRight.collectAsStateWithLifecycle()
@@ -184,15 +178,14 @@ fun DashboardView(
     val isPaused by service.isPaused.collectAsStateWithLifecycle()
 
     var activeView by remember { mutableStateOf("lean") } // "lean" or "map"
-    var showSettingsDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     // Startup Animation State
-    var startAnimTriggered by rememberSaveable { mutableStateOf(false) }
+    var startAnimTriggered by rememberSaveable { mutableStateOf(value = false) }
     LaunchedEffect(hasPlayedStartupAnimation) {
         if (!hasPlayedStartupAnimation) {
             startAnimTriggered = true
-            kotlinx.coroutines.delay(2000)
+            delay(2.seconds)
             onStartupAnimationFinished()
         } else {
             startAnimTriggered = true
@@ -220,19 +213,133 @@ fun DashboardView(
             .fillMaxSize()
             .background(DeepBase)
     ) {
-        if (showSettingsDialog) {
-            AlertDialog(
-                onDismissRequest = { showSettingsDialog = false },
-                title = { Text("Settings", style = MaterialTheme.typography.titleLarge) },
-                text = {
+        // Map as Background
+        if (activeView == "map") {
+            MapContent(service, mapView)
+        }
+
+        if (isLandscape) {
+            DashboardLandscapeLayout(
+                service = service,
+                isMetric = isMetric,
+                highlightColor = highlightColor,
+                mutedHighlightColor = mutedHighlightColor,
+                highlightColorName = highlightColorName,
+                onColorChange = onColorChange,
+                onToggleUnit = onToggleUnit,
+                onShowHistory = onShowHistory,
+                onShowSettings = onShowSettings,
+                mapView = mapView,
+                activeView = activeView,
+                onActiveViewChange = { activeView = it },
+                isRecording = isRecording,
+                isPaused = isPaused,
+                startAnimTriggered = startAnimTriggered,
+                hasPlayedStartupAnimation = hasPlayedStartupAnimation,
+                corners = corners,
+                allTimeMaxLeft = allTimeMaxLeft,
+                allTimeMaxRight = allTimeMaxRight,
+                sessionMaxPitch = sessionMaxPitch,
+                sessionMaxLeft = sessionMaxLeft,
+                sessionMaxRight = sessionMaxRight,
+                rollingMaxLeft = rollingMaxLeft,
+                rollingMaxRight = rollingMaxRight,
+                rollingMax1000m = rollingMax1000m
+            )
+        } else {
+            DashboardPortraitLayout(
+                service = service,
+                isMetric = isMetric,
+                highlightColor = highlightColor,
+                mutedHighlightColor = mutedHighlightColor,
+                highlightColorName = highlightColorName,
+                onColorChange = onColorChange,
+                onToggleUnit = onToggleUnit,
+                onShowHistory = onShowHistory,
+                onShowSettings = onShowSettings,
+                mapView = mapView,
+                activeView = activeView,
+                onActiveViewChange = { activeView = it },
+                isRecording = isRecording,
+                isPaused = isPaused,
+                startAnimTriggered = startAnimTriggered,
+                hasPlayedStartupAnimation = hasPlayedStartupAnimation,
+                corners = corners,
+                allTimeMaxLeft = allTimeMaxLeft,
+                allTimeMaxRight = allTimeMaxRight,
+                sessionMaxPitch = sessionMaxPitch,
+                sessionMaxLeft = sessionMaxLeft,
+                sessionMaxRight = sessionMaxRight,
+                rollingMaxLeft = rollingMaxLeft,
+                rollingMaxRight = rollingMaxRight,
+                rollingMax1000m = rollingMax1000m
+            )
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen(
+    service: TelemetryService,
+    isMetric: Boolean,
+    highlightColor: Color,
+    highlightColorName: String,
+    onColorChange: (String) -> Unit,
+    onToggleUnit: () -> Unit,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DeepBase)
+            .padding(16.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "SETTINGS",
+                    style = MaterialTheme.typography.titleLarge.copy(fontFamily = Inter, fontWeight = FontWeight.Bold),
+                    color = highlightColor
+                )
+                IconButton(onClick = onBack) {
+                    Text("✕", color = PureWhite, style = MaterialTheme.typography.titleLarge)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(if (isLandscape) 12.dp else 24.dp))
+
+            val scrollState1 = rememberScrollState()
+            val scrollState2 = rememberScrollState()
+            val scrollStateSingle = rememberScrollState()
+
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    // Left Column: Color & Unit System
                     Column(
                         modifier = Modifier
-                            .padding(vertical = 8.dp)
-                            .verticalScroll(rememberScrollState())
+                            .weight(1f)
+                            .verticalScroll(scrollState1),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text("Highlight Color", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
                                 val color = when(colorName) {
                                     "Yamaha Blue" -> YamahaBlue
@@ -261,17 +368,14 @@ fun DashboardView(
                                 }
                             }
                         }
-                        
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Text("Unit System", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+
                         Spacer(modifier = Modifier.height(8.dp))
+                        Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (!isMetric) onToggleUnit()
-                                }
-                                .padding(vertical = 8.dp),
+                                            .fillMaxWidth()
+                                            .clickable { if (!isMetric) onToggleUnit() }
+                                            .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
@@ -280,15 +384,13 @@ fun DashboardView(
                                 colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Metric (km/h)", color = PureWhite)
+                            Text("Metric (km/h)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
                         }
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (isMetric) onToggleUnit()
-                                }
-                                .padding(vertical = 8.dp),
+                                            .fillMaxWidth()
+                                            .clickable { if (isMetric) onToggleUnit() }
+                                            .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
@@ -297,12 +399,18 @@ fun DashboardView(
                                 colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Imperial (mph)", color = PureWhite)
+                            Text("Imperial (mph)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
                         }
+                    }
 
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Text("Launch Orientation", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        Spacer(modifier = Modifier.height(8.dp))
+                    // Right Column: Launch Orientation & All-Time Stats
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(scrollState2),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("LAUNCH ORIENTATION", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                         val prefs = remember { androidx.preference.PreferenceManager.getDefaultSharedPreferences(context) }
                         var defaultLaunchMode by remember { mutableStateOf(prefs.getString("default_launch_mode", "Portrait") ?: "Portrait") }
 
@@ -312,22 +420,22 @@ fun DashboardView(
                                 .clickable {
                                     if (defaultLaunchMode != "Portrait") {
                                         defaultLaunchMode = "Portrait"
-                                        prefs.edit().putString("default_launch_mode", "Portrait").apply()
+                                        prefs.edit { putString("default_launch_mode", "Portrait") }
                                     }
                                 }
-                                .padding(vertical = 8.dp),
+                                .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
                                 selected = defaultLaunchMode == "Portrait",
                                 onClick = {
                                     defaultLaunchMode = "Portrait"
-                                    prefs.edit().putString("default_launch_mode", "Portrait").apply()
+                                    prefs.edit { putString("default_launch_mode", "Portrait") }
                                 },
                                 colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Portrait Mode", color = PureWhite)
+                            Text("Portrait Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
                         }
                         Row(
                             modifier = Modifier
@@ -335,118 +443,192 @@ fun DashboardView(
                                 .clickable {
                                     if (defaultLaunchMode != "Landscape") {
                                         defaultLaunchMode = "Landscape"
-                                        prefs.edit().putString("default_launch_mode", "Landscape").apply()
+                                        prefs.edit { putString("default_launch_mode", "Landscape") }
                                     }
                                 }
-                                .padding(vertical = 8.dp),
+                                .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
                                 selected = defaultLaunchMode == "Landscape",
                                 onClick = {
                                     defaultLaunchMode = "Landscape"
-                                    prefs.edit().putString("default_launch_mode", "Landscape").apply()
+                                    prefs.edit { putString("default_launch_mode", "Landscape") }
                                 },
                                 colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Horizontal Mode", color = PureWhite)
+                            Text("Horizontal Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
                         }
 
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Text("All-Time Stats", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                         Spacer(modifier = Modifier.height(8.dp))
+                        Text("ALL-TIME STATS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                         Button(
-                            onClick = {
-                                service.resetAllTimeLean()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = AlertRed,
-                                contentColor = PureWhite
-                            ),
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                            onClick = { service.resetAllTimeLean() },
+                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed, contentColor = PureWhite),
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(8.dp)
                         ) {
                             Text("RESET ALL-TIME MAX LEAN", fontWeight = FontWeight.Bold)
                         }
                     }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showSettingsDialog = false }) {
-                        Text("CLOSE", color = highlightColor, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                // Portrait Layout (Single Column)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(scrollStateSingle),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
+                            val color = when(colorName) {
+                                "Yamaha Blue" -> YamahaBlue
+                                "Ducati Red" -> DucatiRed
+                                "Kawasaki Green" -> KawasakiGreen
+                                "Pure White" -> PureWhiteHighlight
+                                else -> NeonCyan
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(color, RoundedCornerShape(21.dp))
+                                    .clickable { onColorChange(colorName) }
+                                    .padding(4.dp)
+                            ) {
+                                if (highlightColorName == colorName) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(DeepCarbon, RoundedCornerShape(21.dp))
+                                            .padding(4.dp)
+                                    ) {
+                                        Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(21.dp)))
+                                    }
+                                }
+                            }
+                        }
                     }
-                },
-                containerColor = SurfaceCard,
-                titleContentColor = PureWhite,
-                textContentColor = MutedGrey
-            )
-        }
 
-        // Map as Background
-        if (activeView == "map") {
-            MapContent(service, mapView)
-        }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { if (!isMetric) onToggleUnit() }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = isMetric,
+                            onClick = { if (!isMetric) onToggleUnit() },
+                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Metric (km/h)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { if (isMetric) onToggleUnit() }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = !isMetric,
+                            onClick = { if (isMetric) onToggleUnit() },
+                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Imperial (mph)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                    }
 
-        if (isLandscape) {
-            DashboardLandscapeLayout(
-                service = service,
-                isMetric = isMetric,
-                highlightColor = highlightColor,
-                mutedHighlightColor = mutedHighlightColor,
-                highlightColorName = highlightColorName,
-                onColorChange = onColorChange,
-                onToggleUnit = onToggleUnit,
-                onShowHistory = onShowHistory,
-                onShowSettings = { showSettingsDialog = true },
-                mapView = mapView,
-                activeView = activeView,
-                onActiveViewChange = { activeView = it },
-                isRecording = isRecording,
-                isPaused = isPaused,
-                startAnimTriggered = startAnimTriggered,
-                hasPlayedStartupAnimation = hasPlayedStartupAnimation,
-                corners = corners,
-                allTimeMaxLeft = allTimeMaxLeft,
-                allTimeMaxRight = allTimeMaxRight,
-                sessionMaxPitch = sessionMaxPitch,
-                sessionMaxLeft = sessionMaxLeft,
-                sessionMaxRight = sessionMaxRight,
-                rollingMaxLeft = rollingMaxLeft,
-                rollingMaxRight = rollingMaxRight,
-                rollingMax1000m = rollingMax1000m
-            )
-        } else {
-            DashboardPortraitLayout(
-                service = service,
-                isMetric = isMetric,
-                highlightColor = highlightColor,
-                mutedHighlightColor = mutedHighlightColor,
-                highlightColorName = highlightColorName,
-                onColorChange = onColorChange,
-                onToggleUnit = onToggleUnit,
-                onShowHistory = onShowHistory,
-                onShowSettings = { showSettingsDialog = true },
-                mapView = mapView,
-                activeView = activeView,
-                onActiveViewChange = { activeView = it },
-                isRecording = isRecording,
-                isPaused = isPaused,
-                startAnimTriggered = startAnimTriggered,
-                hasPlayedStartupAnimation = hasPlayedStartupAnimation,
-                corners = corners,
-                allTimeMaxLeft = allTimeMaxLeft,
-                allTimeMaxRight = allTimeMaxRight,
-                sessionMaxPitch = sessionMaxPitch,
-                sessionMaxLeft = sessionMaxLeft,
-                sessionMaxRight = sessionMaxRight,
-                rollingMaxLeft = rollingMaxLeft,
-                rollingMaxRight = rollingMaxRight,
-                rollingMax1000m = rollingMax1000m
-            )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("LAUNCH ORIENTATION", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                    val prefs = remember { androidx.preference.PreferenceManager.getDefaultSharedPreferences(context) }
+                    var defaultLaunchMode by remember { mutableStateOf(prefs.getString("default_launch_mode", "Portrait") ?: "Portrait") }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (defaultLaunchMode != "Portrait") {
+                                    defaultLaunchMode = "Portrait"
+                                    prefs.edit { putString("default_launch_mode", "Portrait") }
+                                }
+                            }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = defaultLaunchMode == "Portrait",
+                            onClick = {
+                                defaultLaunchMode = "Portrait"
+                                prefs.edit { putString("default_launch_mode", "Portrait") }
+                            },
+                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Portrait Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (defaultLaunchMode != "Landscape") {
+                                    defaultLaunchMode = "Landscape"
+                                    prefs.edit { putString("default_launch_mode", "Landscape") }
+                                }
+                            }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = defaultLaunchMode == "Landscape",
+                            onClick = {
+                                defaultLaunchMode = "Landscape"
+                                prefs.edit { putString("default_launch_mode", "Landscape") }
+                            },
+                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Horizontal Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("ALL-TIME STATS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                    Button(
+                        onClick = { service.resetAllTimeLean() },
+                        colors = ButtonDefaults.buttonColors(containerColor = AlertRed, contentColor = PureWhite),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("RESET ALL-TIME MAX LEAN", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = onBack,
+                colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("SAVE & CLOSE", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            }
         }
     }
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun DashboardPortraitLayout(
     service: TelemetryService,
@@ -650,6 +832,7 @@ fun DashboardPortraitLayout(
     }
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun DashboardLandscapeLayout(
     service: TelemetryService,
@@ -681,121 +864,300 @@ fun DashboardLandscapeLayout(
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
 
-    Row(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Left Column: Main Gauges (Lean or Map)
-        Box(
+    Box(modifier = Modifier.fillMaxSize()) {
+        Row(
             modifier = Modifier
-                .weight(1.5f)
-                .fillMaxHeight()
+                .fillMaxSize()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
+            // Left Column: All buttons and toggles (width reduced by 30%: weight from 1.0f to 0.7f)
+            Column(
+                modifier = Modifier
+                    .weight(0.7f)
+                    .fillMaxHeight()
+                    .zIndex(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // View toggles at top of Left Column
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { onActiveViewChange("lean") },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (activeView == "lean") highlightColor else SurfaceCard,
+                            contentColor = if (activeView == "lean") DeepCarbon else PureWhite
+                        ),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentPadding = PaddingValues(0.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "Horizon",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                    Button(
+                        onClick = { onActiveViewChange("map") },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (activeView == "map") highlightColor else SurfaceCard,
+                            contentColor = if (activeView == "map") DeepCarbon else PureWhite
+                        ),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentPadding = PaddingValues(0.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "Map",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Stop button state and dialog
+                var showStopDialog by remember { mutableStateOf(false) }
+                if (showStopDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showStopDialog = false },
+                        title = { Text("Stop Recording") },
+                        text = { Text("Are you sure you want to stop recording?") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showStopDialog = false
+                                service.stopRecording()
+                            }) {
+                                Text("Stop", color = AlertRed)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showStopDialog = false }) {
+                                Text("Cancel", color = PureWhite)
+                            }
+                        },
+                        containerColor = SurfaceCard,
+                        titleContentColor = PureWhite,
+                        textContentColor = MutedGrey
+                    )
+                }
+
+                // Session control button
+                Button(
+                    onClick = {
+                        if (!isRecording || isPaused) service.startRecording()
+                        else service.pauseRecording()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = highlightColor,
+                        contentColor = Color.Black
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = if (isRecording && !isPaused) "PAUSE" else if (isPaused) "RESUME" else "START",
+                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter, color = Color.Black)
+                        ,
+                        maxLines = 2,
+                        softWrap = true
+                    )
+                }
+
+                if (isRecording) {
+                    OutlinedButton(
+                        onClick = { showStopDialog = true },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = DeepCarbon,
+                            contentColor = highlightColor
+                        ),
+                        border = BorderStroke(2.dp, highlightColor),
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = "STOP\nSESSION",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = Inter,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                textAlign = TextAlign.Center
+                            ),
+                            maxLines = 2,
+                            softWrap = true
+                        )
+                    }
+                }
+
+                // Calibrate & History
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(38.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { service.calibrateSensors() },
+                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentPadding = PaddingValues(0.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, BorderDivider)
+                    ) {
+                        Text(
+                            text = "Calibrate",
+                            style = MaterialTheme.typography.labelSmall.copy(color = MutedGrey, fontSize = 9.sp),
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    Button(
+                        onClick = onShowHistory,
+                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentPadding = PaddingValues(0.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, BorderDivider)
+                    ) {
+                        Text(
+                            text = "History",
+                            style = MaterialTheme.typography.labelSmall.copy(color = MutedGrey, fontSize = 9.sp),
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+
+                // Settings & Rotate at the very bottom
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(38.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onShowSettings,
+                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentPadding = PaddingValues(0.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, BorderDivider)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = MutedGrey,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    val context = LocalContext.current
+                    Button(
+                        onClick = {
+                            val activity = context as? AndroidActivity
+                            val newOrientation = if (activity?.requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
+                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            } else {
+                                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                            }
+                            activity?.requestedOrientation = newOrientation
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentPadding = PaddingValues(0.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, BorderDivider)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ScreenRotation,
+                            contentDescription = "Rotate Screen",
+                            tint = highlightColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+
+            // Central space where indicator is shown
             if (activeView == "lean") {
                 LeanHorizonIndicator(
                     lean = currentLean,
                     highlightColor = highlightColor,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .weight(1.8f)
+                        .fillMaxHeight(),
+                    sizeScale = 1.0f,
+                    yOffsetPercent = 0.0f
                 )
+            } else {
+                Spacer(modifier = Modifier.weight(1.8f))
             }
-            
-            // View Toggles overlayed at top
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = { onActiveViewChange("lean") },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (activeView == "lean") highlightColor else SurfaceCard.copy(alpha = 0.8f),
-                        contentColor = if (activeView == "lean") DeepCarbon else PureWhite
-                    ),
-                    modifier = Modifier.height(36.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Horizon", style = MaterialTheme.typography.labelMedium)
-                }
-                Button(
-                    onClick = { onActiveViewChange("map") },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (activeView == "map") highlightColor else SurfaceCard.copy(alpha = 0.8f),
-                        contentColor = if (activeView == "map") DeepCarbon else PureWhite
-                    ),
-                    modifier = Modifier.height(36.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Map", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-        }
 
-        // Right Column: Stats and Controls
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Top Stats Row
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val absLeanVal = abs(currentLean)
-                val leanProgress = ((absLeanVal - 30f) / 10f).coerceIn(0f, 1f)
-                
+            // Right Column: All stats / data (weight remaining 1.0f)
+            Column(
+                modifier = Modifier
+                    .weight(1.0f)
+                    .fillMaxHeight()
+                    .zIndex(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Top Stats Row
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val absLeanVal = abs(currentLean)
+                    val leanProgress = ((absLeanVal - 30f) / 10f).coerceIn(0f, 1f)
+                    
+                    MetricCard(
+                        title = "LEAN",
+                        value = absLeanVal.toInt().toString(),
+                        unit = "°",
+                        color = PureWhite,
+                        containerColor = lerp(SurfaceCard, AlertRed, leanProgress),
+                        modifier = Modifier.weight(1f),
+                        weight = FontWeight(700 + (leanProgress * 200).toInt())
+                    )
+                    MetricCard(
+                        title = "SPEED",
+                        value = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
+                        unit = if (isMetric) "km/h" else "mph",
+                        color = highlightColor,
+                        containerColor = SurfaceCard,
+                        modifier = Modifier.weight(1f),
+                        onClick = onToggleUnit
+                    )
+                }
+
+                // 1000m Max Lean in a separate field right below lean and speed
+                val max1000mProgress = ((rollingMax1000m - 30f) / 10f).coerceIn(0f, 1f)
                 MetricCard(
-                    title = "LEAN",
-                    value = absLeanVal.toInt().toString(),
+                    title = "1000m MAX LEAN",
+                    value = rollingMax1000m.toInt().toString(),
                     unit = "°",
                     color = PureWhite,
-                    containerColor = lerp(SurfaceCard, AlertRed, leanProgress),
-                    modifier = Modifier.weight(1f),
-                    weight = FontWeight(700 + (leanProgress * 200).toInt())
+                    containerColor = lerp(SurfaceCard, AlertRed, max1000mProgress),
+                    modifier = Modifier.fillMaxWidth(),
+                    weight = FontWeight(700 + (max1000mProgress * 200).toInt())
                 )
-                MetricCard(
-                    title = "SPEED",
-                    value = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
-                    unit = if (isMetric) "km/h" else "mph",
-                    color = highlightColor,
-                    containerColor = SurfaceCard,
-                    modifier = Modifier.weight(1f),
-                    onClick = onToggleUnit
-                )
-            }
 
-            // More Stats
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-                border = BorderStroke(1.dp, BorderDivider),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(8.dp)) {
-                    HistoryRow("Session Max", "L: ${abs(sessionMaxLeft).toInt()}° / R: ${sessionMaxRight.toInt()}°", PureWhite)
-                    HistoryRow("All-Time Max", "L: ${abs(allTimeMaxLeft).toInt()}° / R: ${allTimeMaxRight.toInt()}°", highlightColor)
-                    HistoryRow("1000m Max", "${rollingMax1000m.toInt()}°", PureWhite)
+                // More Stats (Session Max, Corners Driven, Wheelie angle)
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                    border = BorderStroke(1.dp, BorderDivider),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp)
+                    ) {
+                        HistoryRow("Session Max", "L: ${abs(sessionMaxLeft).toInt()}° / R: ${sessionMaxRight.toInt()}°", PureWhite) { service.resetSessionLean() }
+                        HistoryRow("Corners Driven", "${corners.size}", PureWhite) { service.resetCornerCount() }
+                        HistoryRow("Wheelie Angle", "${sessionMaxPitch.toInt()}°", PureWhite) { service.resetSessionPitch() }
+                    }
                 }
             }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Controls
-            ControlButtonsContentV3(
-                isRecording = isRecording,
-                isPaused = isPaused,
-                highlightColor = highlightColor,
-                onStart = { service.startRecording() },
-                onPause = { service.pauseRecording() },
-                onCalibrate = { service.calibrateSensors() },
-                onStop = { service.stopRecording() },
-                onShowHistory = onShowHistory,
-                onShowSettings = onShowSettings,
-                isMapMode = activeView == "map"
-            )
         }
     }
 }
@@ -852,7 +1214,7 @@ fun StartupAnimatedElement(
     
     LaunchedEffect(triggered) {
         if (triggered) {
-            kotlinx.coroutines.delay(randomDelay.toLong() + duration)
+            delay((randomDelay + duration).milliseconds)
             isFlickeringActive = false
         }
     }
@@ -1038,24 +1400,70 @@ fun ControlButtonsContentV3(
 }
 
 @Composable
-fun LeanHorizonIndicator(lean: Float, highlightColor: Color, modifier: Modifier = Modifier) {
+fun LeanHorizonIndicator(
+    lean: Float,
+    highlightColor: Color,
+    modifier: Modifier = Modifier,
+    sizeScale: Float = 1.0f,
+    yOffsetPercent: Float = 0.0f
+) {
     BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.BottomCenter) {
-        val bikeWidth = maxWidth * 0.85f
+        val density = LocalDensity.current
+        val configuration = LocalConfiguration.current
+        val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+        // Base measurements in pixels
+        val sizeWidthPx = constraints.maxWidth.toFloat()
+        val sizeHeightPx = constraints.maxHeight.toFloat()
+        val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
+
+        // Use the smaller dimension as the base to fit perfectly in both orientations
+        val limitingDimPx = if (sizeWidthPx < sizeHeightPx) sizeWidthPx else sizeHeightPx
+
+        val baseMarkingRadius = (limitingDimPx / 2f) * 0.98f
+        val baseTickLength = with(density) { 12.dp.toPx() }
+        val baseLabelPadding = with(density) { 10.dp.toPx() }
+        val baseLabelRadius = baseMarkingRadius + baseTickLength + baseLabelPadding
+
+        // Center of dial/horizon line
+        val calculatedCenterY = if (isLandscape) {
+            sizeHeightPx + with(density) { 12.dp.toPx() } - (0.10f * screenWidthPx)
+        } else {
+            sizeHeightPx - with(density) { 8.dp.toPx() } - (sizeHeightPx * yOffsetPercent)
+        }
+
+        // Calculate dynamic optimal scale to use available space and prevent cutting off elements at the top/sides
+        val paddingY = with(density) { 24.dp.toPx() }
+        val paddingX = with(density) { 16.dp.toPx() }
+
+        val maxSFromHeight = if (calculatedCenterY > paddingY) {
+            (calculatedCenterY - paddingY) / baseLabelRadius
+        } else {
+            1.0f
+        }
+
+        val maxSFromWidth = ((sizeWidthPx / 2f) - paddingX) / (baseLabelRadius * 0.7071f)
+
+        // Select the ideal scale based on constraints, allowing scaling up to fill available space
+        val optimalScale = minOf(maxSFromHeight, maxSFromWidth).coerceIn(0.6f, 1.8f)
+        val finalScale = optimalScale * sizeScale
+
+        // Use optimal scale to size the bike and indicator dial
+        val bikeWidth = with(density) { limitingDimPx.toDp() } * 0.85f * finalScale
         val bikeHeight = bikeWidth * (1536f / 2816f)
 
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val centerY = size.height - 8.dp.toPx()
-            val center = Offset(size.width / 2f, centerY)
-            val markingRadius = (size.width / 2f) * 0.98f
-            val tickLength = 12.dp.toPx()
+            val center = Offset(size.width / 2f, calculatedCenterY)
+            val markingRadius = baseMarkingRadius * finalScale
+            val tickLength = baseTickLength * finalScale
 
             rotate(degrees = -lean, pivot = center) {
-                // Draw Ground / Street line
+                // Draw Ground / Street line (always 10% of screen width above screen bottom in landscape)
                 drawLine(
                     color = MutedCyan.copy(alpha = 0.6f),
                     start = Offset(center.x - 5000f, center.y),
                     end = Offset(center.x + 5000f, center.y),
-                    strokeWidth = 3.dp.toPx()
+                    strokeWidth = 3.dp.toPx() * finalScale
                 )
 
                 val markingAngles = listOf(0f, 15f, 30f, 45f)
@@ -1064,7 +1472,7 @@ fun LeanHorizonIndicator(lean: Float, highlightColor: Color, modifier: Modifier 
                         val rad = Math.toRadians(a.toDouble()).toFloat()
                         val isZero = angle == 0f
                         val currentTickLength = if (isZero) tickLength * 1.5f else tickLength
-                        val currentStrokeWidth = if (isZero) 9.dp.toPx() else 3.dp.toPx()
+                        val currentStrokeWidth = if (isZero) 9.dp.toPx() * finalScale else 3.dp.toPx() * finalScale
                         val currentAlpha = 1f
 
                         drawLine(
@@ -1078,11 +1486,11 @@ fun LeanHorizonIndicator(lean: Float, highlightColor: Color, modifier: Modifier 
                             drawIntoCanvas { canvas ->
                                 val paint = Paint().apply {
                                     color = PureWhite.toArgb()
-                                    textSize = 18.sp.toPx()
+                                    textSize = 18.sp.toPx() * finalScale
                                     textAlign = Paint.Align.CENTER
                                     typeface = Typeface.DEFAULT
                                 }
-                                val labelRadius = markingRadius + tickLength + 10.dp.toPx()
+                                val labelRadius = markingRadius + tickLength + (10.dp.toPx() * finalScale)
                                 val lx = center.x + labelRadius * cos(rad)
                                 val ly = center.y + labelRadius * sin(rad) + (paint.textSize / 3)
                                 val labelText = "${angle.toInt()}°"
@@ -1099,18 +1507,18 @@ fun LeanHorizonIndicator(lean: Float, highlightColor: Color, modifier: Modifier 
 
             // Draw highlightColor dot for current lean angle on the dial (placed below the indicator circle line)
             val dotRad = Math.toRadians(270.0).toFloat()
-            val dotRadius = markingRadius - 12.dp.toPx()
+            val dotRadius = markingRadius - (12.dp.toPx() * finalScale)
             drawCircle(
                 color = highlightColor,
-                radius = 6.dp.toPx(),
+                radius = 6.dp.toPx() * finalScale,
                 center = Offset(center.x + dotRadius * cos(dotRad), center.y + dotRadius * sin(dotRad))
             )
         }
 
-        val density = LocalDensity.current
-        val offsetDp = remember(density) {
+        val offsetDp = remember(density, bikeHeight, sizeHeightPx, isLandscape, screenWidthPx, finalScale) {
             with(density) {
-                (-8.dp.toPx() + 40f).toDp()
+                val offsetY = calculatedCenterY - sizeHeightPx + (40f * finalScale)
+                offsetY.toDp()
             }
         }
 
@@ -1124,7 +1532,7 @@ fun LeanHorizonIndicator(lean: Float, highlightColor: Color, modifier: Modifier 
                 .offset(y = offsetDp)
                 .graphicsLayer {
                     val bikeHeightPx = bikeHeight.toPx()
-                    val pivotY = if (bikeHeightPx > 0f) (bikeHeightPx - 40f) / bikeHeightPx else 1.0f
+                    val pivotY = if (bikeHeightPx > 0f) (bikeHeightPx - 40f * finalScale) / bikeHeightPx else 1.0f
                     transformOrigin = TransformOrigin(0.5f, pivotY)
                 }
         )

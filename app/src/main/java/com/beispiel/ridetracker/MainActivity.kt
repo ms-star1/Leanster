@@ -6,11 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ActivityInfo
-import android.net.Uri
+import androidx.core.net.toUri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,6 +36,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.activity.compose.BackHandler
@@ -45,17 +45,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.preference.PreferenceManager
-import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.Color
 import com.beispiel.ridetracker.ui.theme.*
-import org.maplibre.android.MapLibre
 import org.maplibre.android.maps.MapView
 import java.io.File
 
@@ -74,7 +70,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
+        ActivityResultContracts.RequestMultiplePermissions(),
     ) { permissions ->
         if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
             startTelemetryService()
@@ -97,9 +93,9 @@ class MainActivity : ComponentActivity() {
 
         val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.ACCESS_COARSE_LOCATION,
         )
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         
@@ -114,8 +110,8 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun MainContent() {
-        var currentTab by rememberSaveable { mutableStateOf(0) }
-        var isMetric by rememberSaveable { mutableStateOf(true) }
+        var currentTab by rememberSaveable { mutableIntStateOf(value = 0) }
+        var isMetric by rememberSaveable { mutableStateOf(value = true) }
         var highlightColorName by rememberSaveable { mutableStateOf("Cyan") }
         
         val highlightColor = when (highlightColorName) {
@@ -134,9 +130,9 @@ class MainActivity : ComponentActivity() {
             else -> MutedCyan
         }
 
-        var hasPlayedStartupAnimation by rememberSaveable { mutableStateOf(false) }
+        var hasPlayedStartupAnimation by rememberSaveable { mutableStateOf(value = false) }
         val service = telemetryService
-        val isRecording by (service?.isRecording?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(false) })
+        val isRecording by (service?.isRecording?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(value = false) })
         val context = LocalContext.current
 
         val mapView = remember {
@@ -152,8 +148,8 @@ class MainActivity : ComponentActivity() {
                     maplibreMap.moveCamera(
                         org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
                             org.maplibre.android.geometry.LatLng(52.5200, 13.4050),
-                            15.0
-                        )
+                            15.0,
+                        ),
                     )
                 }
             }
@@ -192,13 +188,26 @@ class MainActivity : ComponentActivity() {
                             onColorChange = { highlightColorName = it },
                             onToggleUnit = { isMetric = !isMetric },
                             onShowHistory = { currentTab = 3 },
-                            onShowSettings = {
-                                // Handled internally now
-                            },
+                            onShowSettings = { currentTab = 1 },
                             mapView = mapView,
-                            hasPlayedStartupAnimation = hasPlayedStartupAnimation,
-                            onStartupAnimationFinished = { hasPlayedStartupAnimation = true }
-                        )
+                            hasPlayedStartupAnimation = hasPlayedStartupAnimation
+                        ) {
+                            hasPlayedStartupAnimation = true
+                        }
+                        1 -> {
+                            BackHandler(enabled = true) {
+                                currentTab = 0
+                            }
+                            SettingsScreen(
+                                service = service,
+                                isMetric = isMetric,
+                                highlightColor = highlightColor,
+                                highlightColorName = highlightColorName,
+                                onColorChange = { highlightColorName = it },
+                                onToggleUnit = { isMetric = !isMetric },
+                                onBack = { currentTab = 0 }
+                            )
+                        }
                         2 -> {
                             val points by service.sessionPoints.collectAsStateWithLifecycle()
                             val corners by service.detectedCorners.collectAsStateWithLifecycle()
@@ -265,7 +274,7 @@ class MainActivity : ComponentActivity() {
                     }
                     
                     LaunchedEffect(isRecording) {
-                        if (!isRecording && (currentTab == 0 || currentTab == 1) && service.sessionPoints.value.isNotEmpty()) {
+                        if (((!isRecording) && ((currentTab == 0) || (currentTab == 1))) && (service.sessionPoints.value.isNotEmpty())) {
                             currentTab = 2
                         }
                     }
@@ -278,6 +287,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @Suppress("unused")
     @Composable
     fun AnimatedSplashScreen(onAnimationComplete: () -> Unit) {
         val context = LocalContext.current
@@ -291,7 +301,7 @@ class MainActivity : ComponentActivity() {
                 factory = { ctx: Context ->
                     VideoView(ctx).apply {
                         val videoPath = "android.resource://${context.packageName}/${R.raw.splashv3}"
-                        setVideoURI(Uri.parse(videoPath))
+                        setVideoURI(videoPath.toUri())
                         setOnCompletionListener {
                             onAnimationComplete()
                         }
@@ -331,6 +341,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun MapContent(
     service: TelemetryService,
@@ -341,7 +352,7 @@ fun MapContent(
     val currentLocation by service.currentLocation.collectAsStateWithLifecycle()
     val currentHeading by service.currentHeading.collectAsStateWithLifecycle()
 
-    val hasFix = currentLocation != null && (currentLocation?.accuracy ?: 100f) < 30f
+    val hasFix = (currentLocation != null) && ((currentLocation?.accuracy ?: 100f) < 30f)
     
     Box(modifier = modifier.fillMaxSize()) {
         if (currentLocation != null) {
