@@ -49,7 +49,8 @@ fun HistoryMenuScreen(
     onDeleteSession: (String) -> Unit,
     onSelectSession: (RideSession) -> Unit,
     onExportSession: (RideSession) -> Unit,
-    highlightColor: Color = NeonCyan
+    highlightColor: Color = NeonCyan,
+    isMetric: Boolean = true
 ) {
     val mutedHighlightColor = when (highlightColor) {
         YamahaBlue -> MutedYamahaBlue
@@ -60,6 +61,7 @@ fun HistoryMenuScreen(
     }
 
     var sessionToDelete by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
 
     if (sessionToDelete != null) {
         AlertDialog(
@@ -81,6 +83,18 @@ fun HistoryMenuScreen(
                 }
             }
         )
+    }
+
+    val filteredSessions = remember(sessions, searchQuery) {
+        if (searchQuery.isBlank()) {
+            sessions
+        } else {
+            sessions.filter { session ->
+                val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                val dateStr = dateFormat.format(java.util.Date(session.startTime))
+                dateStr.contains(searchQuery, ignoreCase = true) || session.id.contains(searchQuery, ignoreCase = true)
+            }
+        }
     }
 
     val configuration = LocalConfiguration.current
@@ -112,29 +126,51 @@ fun HistoryMenuScreen(
             )
         }
 
-        if (sessions.isEmpty()) {
+        // Search Bar at Header
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            placeholder = { Text("Filter sessions by date (e.g. 2026)...", color = MutedGrey) },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = PureWhite,
+                unfocusedTextColor = PureWhite,
+                focusedContainerColor = SurfaceCard,
+                unfocusedContainerColor = SurfaceCard,
+                focusedBorderColor = highlightColor,
+                unfocusedBorderColor = BorderDivider,
+                cursorColor = highlightColor
+            ),
+            shape = RoundedCornerShape(12.dp),
+            singleLine = true
+        )
+
+        if (filteredSessions.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No sessions recorded yet.", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = if (sessions.isEmpty()) "No sessions recorded yet." else "No sessions match search filter.",
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
         } else {
             if (isLandscape) {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    items(sessions) { session ->
-                        SessionHistoryCard(session, onSelectSession, { sessionToDelete = it }, onExportSession, highlightColor, mutedHighlightColor)
+                    items(filteredSessions) { session ->
+                        SessionHistoryCard(session, onSelectSession, { sessionToDelete = it }, onExportSession, highlightColor, mutedHighlightColor, isMetric)
                     }
                 }
             } else {
                 LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    items(sessions) { session ->
-                        SessionHistoryCard(session, onSelectSession, { sessionToDelete = it }, onExportSession, highlightColor, mutedHighlightColor)
+                    items(filteredSessions) { session ->
+                        SessionHistoryCard(session, onSelectSession, { sessionToDelete = it }, onExportSession, highlightColor, mutedHighlightColor, isMetric)
                     }
                 }
             }
@@ -149,7 +185,8 @@ fun SessionHistoryCard(
     onDeleteRequest: (String) -> Unit,
     onExportSession: (RideSession) -> Unit,
     highlightColor: Color,
-    mutedHighlightColor: Color
+    mutedHighlightColor: Color,
+    isMetric: Boolean = true
 ) {
     Card(
         modifier = Modifier
@@ -160,30 +197,105 @@ fun SessionHistoryCard(
         shape = RoundedCornerShape(12.dp)
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Mini-Map Thumbnail Canvas
+            if (session.points.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 80.dp, height = 65.dp)
+                        .background(DeepCarbon, RoundedCornerShape(8.dp))
+                        .border(1.dp, BorderDivider, RoundedCornerShape(8.dp))
+                        .padding(4.dp)
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val pts = session.points
+                        val lats = pts.map { it.latitude }
+                        val lngs = pts.map { it.longitude }
+                        val minLat = lats.minOrNull() ?: 0.0
+                        val maxLat = lats.maxOrNull() ?: 0.0
+                        val minLng = lngs.minOrNull() ?: 0.0
+                        val maxLng = lngs.maxOrNull() ?: 0.0
+
+                        val latRange = maxLat - minLat
+                        val lngRange = maxLng - minLng
+
+                        val path = Path()
+                        pts.forEachIndexed { index, pt ->
+                            val x = if (lngRange > 0.0) {
+                                ((pt.longitude - minLng) / lngRange * size.width).toFloat()
+                            } else {
+                                size.width / 2f
+                            }
+                            val y = if (latRange > 0.0) {
+                                (size.height - (pt.latitude - minLat) / latRange * size.height).toFloat()
+                            } else {
+                                size.height / 2f
+                            }
+
+                            if (index == 0) {
+                                path.moveTo(x, y)
+                            } else {
+                                path.lineTo(x, y)
+                            }
+                        }
+
+                        drawPath(
+                            path = path,
+                            color = highlightColor,
+                            style = Stroke(width = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                        )
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(width = 80.dp, height = 65.dp)
+                        .background(DeepCarbon, RoundedCornerShape(8.dp))
+                        .border(1.dp, BorderDivider, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("NO GPS", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MutedGrey)
+                }
+            }
+
             Column(modifier = Modifier.weight(1f)) {
                 val dateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
                 val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
                 val dateStr = dateFormat.format(java.util.Date(session.startTime))
                 val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
-                val endTimeStr = if (session.endTime > 0L) timeFormat.format(java.util.Date(session.endTime)) else "--:--"
                 
-                Text(dateStr, style = MaterialTheme.typography.titleMedium, color = PureWhite)
-                Text("$startTimeStr - $endTimeStr", style = MaterialTheme.typography.bodyMedium.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold), color = highlightColor)
-                Text("ID: ${session.id}", style = MaterialTheme.typography.labelSmall, color = MutedGrey)
-            }
-            
-            IconButton(onClick = { onDeleteRequest(session.id) }) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = AlertRed.copy(alpha = 0.7f))
-            }
+                val durationMs = if (session.endTime > session.startTime) session.endTime - session.startTime else 0L
+                val durationMin = durationMs / 60000L
 
-            IconButton(onClick = { onExportSession(session) }) {
-                Icon(Icons.Default.Share, contentDescription = "Export", tint = highlightColor.copy(alpha = 0.8f))
+                val maxSpeedRaw = session.points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
+                val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
+
+                Text(dateStr, style = MaterialTheme.typography.titleMedium, color = PureWhite)
+                Text("$startTimeStr • $durationMin min", style = MaterialTheme.typography.bodyMedium.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold), color = highlightColor)
+                Text(
+                    text = "Lean: L ${abs(session.maxLeanLeft).toInt()}° / R ${session.maxLeanRight.toInt()}° • Speed: ${maxSpeed.toInt()} ${if (isMetric) "km/h" else "mph"}",
+                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
+                    color = MutedGrey
+                )
             }
             
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = mutedHighlightColor)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                IconButton(onClick = { onDeleteRequest(session.id) }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = AlertRed.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                }
+
+                IconButton(onClick = { onExportSession(session) }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Share, contentDescription = "Export", tint = highlightColor.copy(alpha = 0.8f), modifier = Modifier.size(20.dp))
+                }
+            }
+            
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = mutedHighlightColor, modifier = Modifier.size(24.dp))
         }
     }
 }
@@ -193,7 +305,8 @@ fun SessionSummaryOverlay(
     session: RideSession,
     isMetric: Boolean,
     onClose: () -> Unit,
-    highlightColor: Color = NeonCyan
+    highlightColor: Color = NeonCyan,
+    mapView: org.maplibre.android.maps.MapView? = null
 ) {
     val mutedHighlightColor = when (highlightColor) {
         YamahaBlue -> MutedYamahaBlue
@@ -279,8 +392,9 @@ fun SessionSummaryOverlay(
                 ) {
                     Column(
                         modifier = Modifier
-                            .weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         SummaryStatsGrid(
                             totalDistance = totalDistance,
@@ -293,6 +407,45 @@ fun SessionSummaryOverlay(
                             highlightColor = highlightColor,
                             isLandscape = true
                         )
+
+                        // Embedded Vector Map in Left Column (Landscape)
+                        if (mapView != null && session.points.isNotEmpty()) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp),
+                                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                androidx.compose.ui.viewinterop.AndroidView(
+                                    factory = {
+                                        mapView.apply {
+                                            getMapAsync { maplibreMap ->
+                                                maplibreMap.clear()
+                                                val latLngs = session.points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
+                                                maplibreMap.addPolyline(
+                                                    org.maplibre.android.annotations.PolylineOptions()
+                                                        .addAll(latLngs)
+                                                        .color(highlightColor.toArgb())
+                                                        .width(5f)
+                                                )
+                                                val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
+                                                latLngs.forEach { boundsBuilder.include(it) }
+                                                try {
+                                                    maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
+                                                } catch (e: Exception) {
+                                                    val avgLat = latLngs.map { it.latitude }.average()
+                                                    val avgLng = latLngs.map { it.longitude }.average()
+                                                    maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
+                                                }
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
                     }
                     Column(
                         modifier = Modifier
@@ -321,6 +474,47 @@ fun SessionSummaryOverlay(
                         isLandscape = false
                     )
                     Spacer(modifier = Modifier.height(16.dp))
+
+                    // Embedded Vector Map in Scrollable Content (Portrait)
+                    if (mapView != null && session.points.isNotEmpty()) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            androidx.compose.ui.viewinterop.AndroidView(
+                                factory = {
+                                    mapView.apply {
+                                        getMapAsync { maplibreMap ->
+                                            maplibreMap.clear()
+                                            val latLngs = session.points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
+                                            maplibreMap.addPolyline(
+                                                org.maplibre.android.annotations.PolylineOptions()
+                                                    .addAll(latLngs)
+                                                    .color(highlightColor.toArgb())
+                                                    .width(5f)
+                                            )
+                                            val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
+                                            latLngs.forEach { boundsBuilder.include(it) }
+                                            try {
+                                                maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
+                                            } catch (e: Exception) {
+                                                val avgLat = latLngs.map { it.latitude }.average()
+                                                val avgLng = latLngs.map { it.longitude }.average()
+                                                maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
+                                            }
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+
                     SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor)
                 }
             }
@@ -346,7 +540,8 @@ fun SessionSummaryScreen(
     isMetric: Boolean,
     onSave: () -> Unit,
     onDiscard: () -> Unit,
-    highlightColor: Color = NeonCyan
+    highlightColor: Color = NeonCyan,
+    mapView: org.maplibre.android.maps.MapView? = null
 ) {
     val mutedHighlightColor = when (highlightColor) {
         YamahaBlue -> MutedYamahaBlue
@@ -466,8 +661,48 @@ fun SessionSummaryScreen(
                             maxPitch = maxPitch,
                             cornersCount = corners.size,
                             isMetric = isMetric,
-                            highlightColor = highlightColor
+                            highlightColor = highlightColor,
+                            isLandscape = true
                         )
+
+                        // Embedded Vector Map in Left Column (Landscape)
+                        if (mapView != null && points.isNotEmpty()) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp),
+                                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                androidx.compose.ui.viewinterop.AndroidView(
+                                    factory = {
+                                        mapView.apply {
+                                            getMapAsync { maplibreMap ->
+                                                maplibreMap.clear()
+                                                val latLngs = points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
+                                                maplibreMap.addPolyline(
+                                                    org.maplibre.android.annotations.PolylineOptions()
+                                                        .addAll(latLngs)
+                                                        .color(highlightColor.toArgb())
+                                                        .width(5f)
+                                                )
+                                                val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
+                                                latLngs.forEach { boundsBuilder.include(it) }
+                                                try {
+                                                    maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
+                                                } catch (e: Exception) {
+                                                    val avgLat = latLngs.map { it.latitude }.average()
+                                                    val avgLng = latLngs.map { it.longitude }.average()
+                                                    maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
+                                                }
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
                     }
                     Column(
                         modifier = Modifier
@@ -492,9 +727,51 @@ fun SessionSummaryScreen(
                         maxPitch = maxPitch,
                         cornersCount = corners.size,
                         isMetric = isMetric,
-                        highlightColor = highlightColor
+                        highlightColor = highlightColor,
+                        isLandscape = false
                     )
                     Spacer(modifier = Modifier.height(16.dp))
+
+                    // Embedded Vector Map in Scrollable Content (Portrait)
+                    if (mapView != null && points.isNotEmpty()) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            androidx.compose.ui.viewinterop.AndroidView(
+                                factory = {
+                                    mapView.apply {
+                                        getMapAsync { maplibreMap ->
+                                            maplibreMap.clear()
+                                            val latLngs = points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
+                                            maplibreMap.addPolyline(
+                                                org.maplibre.android.annotations.PolylineOptions()
+                                                    .addAll(latLngs)
+                                                    .color(highlightColor.toArgb())
+                                                    .width(5f)
+                                            )
+                                            val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
+                                            latLngs.forEach { boundsBuilder.include(it) }
+                                            try {
+                                                maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
+                                            } catch (e: Exception) {
+                                                val avgLat = latLngs.map { it.latitude }.average()
+                                                val avgLng = latLngs.map { it.longitude }.average()
+                                                maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
+                                            }
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+
                     SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor)
                 }
             }
@@ -542,32 +819,44 @@ fun SummaryStatCard(
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = SurfaceCard),
         border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-        shape = RoundedCornerShape(if (compact) 8.dp else 12.dp)
+        shape = RoundedCornerShape(12.dp)
     ) {
         Column(
-            modifier = Modifier.padding(if (compact) 6.dp else 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(if (compact) 8.dp else 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
             Text(
-                label,
-                style = if (compact) MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp) else MaterialTheme.typography.labelSmall,
+                text = label,
+                style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.sp, fontSize = if (compact) 10.sp else 12.sp),
                 color = MutedGrey
             )
-            Row(verticalAlignment = Alignment.Bottom) {
+            Spacer(modifier = Modifier.height(if (compact) 2.dp else 4.dp))
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.Center
+            ) {
                 Text(
                     text = value,
-                    style = (if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge).copy(
+                    style = MaterialTheme.typography.displayMedium.copy(
+                        fontSize = if (compact) 22.sp else 28.sp,
                         fontFamily = Rajdhani,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = color
                     ),
-                    color = color
+                    maxLines = 1,
+                    softWrap = false
                 )
-                Text(
-                    text = unit,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = if (compact) 9.sp else 11.sp),
-                    color = color,
-                    modifier = Modifier.padding(bottom = if (compact) 1.dp else 3.dp, start = 1.dp)
-                )
+                if (unit.isNotEmpty()) {
+                    Spacer(modifier = Modifier.width(2.dp))
+                    Text(
+                        text = unit,
+                        style = MaterialTheme.typography.labelMedium.copy(fontSize = if (compact) 10.sp else 12.sp, color = color),
+                        modifier = Modifier.padding(bottom = if (compact) 2.dp else 4.dp)
+                    )
+                }
             }
         }
     }
@@ -735,6 +1024,7 @@ fun TelemetryGraph(
     }
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun SummaryStatsGrid(
     totalDistance: Double,
@@ -747,23 +1037,22 @@ fun SummaryStatsGrid(
     highlightColor: Color,
     isLandscape: Boolean = false
 ) {
-    val distanceStr = remember(totalDistance) { String.format(java.util.Locale.getDefault(), "%.2f", totalDistance) }
-
-    Column(verticalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 12.dp)) {
+        // Row 1
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)
+            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 12.dp)
         ) {
             SummaryStatCard(
-                label = "DISTANCE",
-                value = distanceStr,
-                unit = if (isMetric) "km" else "mi",
+                label = "MAX LEAN (L / R)",
+                value = "L ${abs(maxLeanLeft).toInt()}° | R ${maxLeanRight.toInt()}°",
+                unit = "",
                 modifier = Modifier.weight(1f),
-                color = PureWhite,
+                color = AlertRed,
                 compact = isLandscape
             )
             SummaryStatCard(
-                label = "TOP SPEED",
+                label = "MAX SPEED",
                 value = maxSpeed.toInt().toString(),
                 unit = if (isMetric) "km/h" else "mph",
                 modifier = Modifier.weight(1f),
@@ -772,46 +1061,25 @@ fun SummaryStatsGrid(
             )
         }
 
+        // Row 2
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)
+            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 12.dp)
         ) {
             SummaryStatCard(
-                label = "MAX LEAN L",
-                value = abs(maxLeanLeft).toInt().toString(),
-                unit = "°",
+                label = "TOTAL CURVES",
+                value = cornersCount.toString(),
+                unit = "",
                 modifier = Modifier.weight(1f),
-                color = AlertRed,
+                color = highlightColor,
                 compact = isLandscape
             )
-            SummaryStatCard(
-                label = "MAX LEAN R",
-                value = maxLeanRight.toInt().toString(),
-                unit = "°",
-                modifier = Modifier.weight(1f),
-                color = AlertRed,
-                compact = isLandscape
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(if (isLandscape) 4.dp else 8.dp)
-        ) {
             SummaryStatCard(
                 label = "WHEELIE ANGLE",
                 value = maxPitch.toInt().toString(),
                 unit = "°",
                 modifier = Modifier.weight(1f),
                 color = PureWhite,
-                compact = isLandscape
-            )
-            SummaryStatCard(
-                label = "CORNERS DRIVEN",
-                value = cornersCount.toString(),
-                unit = "",
-                modifier = Modifier.weight(1f),
-                color = highlightColor,
                 compact = isLandscape
             )
         }

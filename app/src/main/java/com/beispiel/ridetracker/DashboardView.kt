@@ -671,46 +671,81 @@ fun DashboardPortraitLayout(
         val leanProgress = ((absLeanVal - 30f) / 10f).coerceIn(0f, 1f)
         val max1000mProgress = ((rollingMax1000m - 30f) / 10f).coerceIn(0f, 1f)
 
+        // Unified Telemetry Top Row (LEAN, SPEED, MAX 1000M)
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.fillMaxWidth().height(90.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            StartupAnimatedElement(order = 0, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1f)) {
+            // Lean Card
+            StartupAnimatedElement(order = 0, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1.0f).fillMaxHeight()) {
                 MetricCard(
                     title = "LEAN",
                     value = absLeanVal.toInt().toString(),
                     unit = "°",
                     color = PureWhite,
                     containerColor = if (activeView == "map") lerp(SurfaceCard, AlertRed, leanProgress).copy(alpha = 0.8f) else lerp(SurfaceCard, AlertRed, leanProgress),
-                    modifier = Modifier,
+                    modifier = Modifier.fillMaxHeight(),
                     weight = FontWeight(700 + (leanProgress * 200).toInt())
                 )
             }
-            StartupAnimatedElement(order = 1, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1f)) {
-                MetricCard(
-                    title = "SPEED",
-                    value = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
-                    unit = if (isMetric) "km/h" else "mph",
-                    color = highlightColor,
-                    containerColor = if (activeView == "map") SurfaceCard.copy(alpha = 0.8f) else SurfaceCard,
-                    modifier = Modifier,
-                    onClick = onToggleUnit
-                )
+
+            // Speedometer Card (Middle)
+            StartupAnimatedElement(order = 1, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1.3f).fillMaxHeight()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .clickable { onToggleUnit() },
+                    colors = CardDefaults.cardColors(containerColor = if (activeView == "map") SurfaceCard.copy(alpha = 0.8f) else SurfaceCard),
+                    border = BorderStroke(1.5.dp, highlightColor),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "SPEED",
+                            style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.sp, fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                            color = MutedGrey
+                        )
+                        Row(
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
+                                style = MaterialTheme.typography.displayLarge.copy(fontSize = 32.sp, color = highlightColor),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = if (isMetric) "km/h" else "mph",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, color = MutedGrey),
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+                    }
+                }
             }
-            StartupAnimatedElement(order = 2, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1f)) {
+
+            // Max 1000m Card
+            StartupAnimatedElement(order = 2, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1.0f).fillMaxHeight()) {
                 MetricCard(
                     title = "MAX 1000m",
                     value = rollingMax1000m.toInt().toString(),
                     unit = "°",
                     color = PureWhite,
                     containerColor = if (activeView == "map") lerp(SurfaceCard, AlertRed, max1000mProgress).copy(alpha = 0.8f) else lerp(SurfaceCard, AlertRed, max1000mProgress),
-                    modifier = Modifier,
+                    modifier = Modifier.fillMaxHeight(),
                     weight = FontWeight(700 + (max1000mProgress * 200).toInt())
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // Toggle Buttons for View
         StartupAnimatedElement(order = 3, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation) {
@@ -745,7 +780,7 @@ fun DashboardPortraitLayout(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Main Display (Horizon or Map Spacer)
         Box(
@@ -1104,11 +1139,55 @@ fun DashboardLandscapeLayout(
                     .zIndex(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Top Stats Row
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Oversized Speedometer Card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(105.dp)
+                        .clickable { onToggleUnit() },
+                    colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+                    border = BorderStroke(1.5.dp, highlightColor),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "SPEEDOMETER",
+                            style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold),
+                            color = MutedGrey
+                        )
+                        Row(
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
+                                style = MaterialTheme.typography.displayMedium.copy(fontSize = 46.sp, color = highlightColor),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = if (isMetric) "km/h" else "mph",
+                                style = MaterialTheme.typography.labelMedium.copy(color = MutedGrey),
+                                modifier = Modifier.padding(bottom = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Row for LEAN and 1000m MAX LEAN
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     val absLeanVal = abs(currentLean)
                     val leanProgress = ((absLeanVal - 30f) / 10f).coerceIn(0f, 1f)
-                    
+                    val max1000mProgress = ((rollingMax1000m - 30f) / 10f).coerceIn(0f, 1f)
+
                     MetricCard(
                         title = "LEAN",
                         value = absLeanVal.toInt().toString(),
@@ -1118,42 +1197,33 @@ fun DashboardLandscapeLayout(
                         modifier = Modifier.weight(1f),
                         weight = FontWeight(700 + (leanProgress * 200).toInt())
                     )
+                    
                     MetricCard(
-                        title = "SPEED",
-                        value = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
-                        unit = if (isMetric) "km/h" else "mph",
-                        color = highlightColor,
-                        containerColor = SurfaceCard,
+                        title = "1000m MAX",
+                        value = rollingMax1000m.toInt().toString(),
+                        unit = "°",
+                        color = PureWhite,
+                        containerColor = lerp(SurfaceCard, AlertRed, max1000mProgress),
                         modifier = Modifier.weight(1f),
-                        onClick = onToggleUnit
+                        weight = FontWeight(700 + (max1000mProgress * 200).toInt())
                     )
                 }
 
-                // 1000m Max Lean in a separate field right below lean and speed
-                val max1000mProgress = ((rollingMax1000m - 30f) / 10f).coerceIn(0f, 1f)
-                MetricCard(
-                    title = "1000m MAX LEAN",
-                    value = rollingMax1000m.toInt().toString(),
-                    unit = "°",
-                    color = PureWhite,
-                    containerColor = lerp(SurfaceCard, AlertRed, max1000mProgress),
-                    modifier = Modifier.fillMaxWidth(),
-                    weight = FontWeight(700 + (max1000mProgress * 200).toInt())
-                )
-
-                // More Stats (Session Max, Corners Driven, Wheelie angle)
+                // Session details card
                 Card(
                     colors = CardDefaults.cardColors(containerColor = SurfaceCard),
                     border = BorderStroke(1.dp, BorderDivider),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().weight(1f)
                 ) {
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp)
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.SpaceAround
                     ) {
                         HistoryRow("Session Max", "L: ${abs(sessionMaxLeft).toInt()}° / R: ${sessionMaxRight.toInt()}°", PureWhite) { service.resetSessionLean() }
-                        HistoryRow("Corners Driven", "${corners.size}", PureWhite) { service.resetCornerCount() }
+                        HistoryRow("Curves Driven", "${corners.size}", PureWhite) { service.resetCornerCount() }
                         HistoryRow("Wheelie Angle", "${sessionMaxPitch.toInt()}°", PureWhite) { service.resetSessionPitch() }
                     }
                 }
@@ -1281,12 +1351,12 @@ fun ControlButtonsContentV3(
 
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Top row: Go/Pause, Stop
+        // Top row: Go/Pause, Stop (Super glove-friendly tall buttons)
         Row(
-            modifier = Modifier.fillMaxWidth().height(64.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.fillMaxWidth().height(72.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Button(
                 onClick = {
@@ -1294,16 +1364,17 @@ fun ControlButtonsContentV3(
                     else onPause()
                 },
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = highlightColor.copy(alpha = buttonAlpha),
+                    containerColor = if (isRecording && !isPaused) AlertRed.copy(alpha = buttonAlpha) else highlightColor.copy(alpha = buttonAlpha),
                     contentColor = Color.Black
                 ),
                 modifier = Modifier.fillMaxHeight().weight(1.4f),
-                contentPadding = PaddingValues(horizontal = 4.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.5.dp, Color.Black.copy(alpha = 0.3f))
             ) {
                 Text(
-                    if (isRecording && !isPaused) "PAUSE SESSION" else if (isPaused) "RESUME SESSION" else "START SESSION",
-                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter, color = Color.Black),
+                    text = if (isRecording && !isPaused) "PAUSE SESSION" else if (isPaused) "RESUME SESSION" else "START SESSION",
+                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter, color = Color.Black, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.5.sp),
                     maxLines = 1,
                     softWrap = false
                 )
@@ -1319,34 +1390,40 @@ fun ControlButtonsContentV3(
                 },
                 colors = ButtonDefaults.outlinedButtonColors(
                     containerColor = DeepCarbon.copy(alpha = buttonAlpha),
-                    contentColor = highlightColor
+                    contentColor = AlertRed
                 ),
-                border = BorderStroke(2.dp, highlightColor),
+                border = BorderStroke(2.5.dp, AlertRed),
                 modifier = Modifier.fillMaxHeight().weight(1f),
-                contentPadding = PaddingValues(horizontal = 4.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                shape = RoundedCornerShape(16.dp)
             ) {
-                Text("STOP", style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter), maxLines = 1, softWrap = false)
+                Text(
+                    text = "STOP",
+                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp),
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
         }
 
         // Bottom row: Settings, Calibrate, Past Sessions
         Row(
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.fillMaxWidth().height(62.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Button(
                 onClick = onShowSettings,
                 colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard.copy(alpha = buttonAlpha)),
-                modifier = Modifier.fillMaxHeight().width(56.dp),
+                modifier = Modifier.fillMaxHeight().width(62.dp),
                 contentPadding = PaddingValues(0.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, BorderDivider)
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.5.dp, BorderDivider)
             ) {
                 Icon(
                     imageVector = Icons.Default.Settings,
                     contentDescription = "Settings",
-                    tint = MutedGrey
+                    tint = MutedGrey,
+                    modifier = Modifier.size(24.dp)
                 )
             }
 
@@ -1362,15 +1439,16 @@ fun ControlButtonsContentV3(
                     activity?.requestedOrientation = newOrientation
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard.copy(alpha = buttonAlpha)),
-                modifier = Modifier.fillMaxHeight().width(56.dp),
+                modifier = Modifier.fillMaxHeight().width(62.dp),
                 contentPadding = PaddingValues(0.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, BorderDivider)
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.5.dp, BorderDivider)
             ) {
                 Icon(
                     imageVector = Icons.Default.ScreenRotation,
                     contentDescription = "Rotate Screen",
-                    tint = highlightColor
+                    tint = highlightColor,
+                    modifier = Modifier.size(24.dp)
                 )
             }
 
@@ -1378,22 +1456,32 @@ fun ControlButtonsContentV3(
                 onClick = onCalibrate,
                 colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard.copy(alpha = buttonAlpha)),
                 modifier = Modifier.fillMaxHeight().weight(1f),
-                contentPadding = PaddingValues(horizontal = 4.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, BorderDivider)
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.5.dp, BorderDivider)
             ) {
-                Text("Calibrate", style = MaterialTheme.typography.labelMedium.copy(color = MutedGrey), maxLines = 1, softWrap = false)
+                Text(
+                    text = "Calibrate",
+                    style = MaterialTheme.typography.titleMedium.copy(color = MutedGrey, fontWeight = FontWeight.Bold),
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
 
             Button(
                 onClick = onShowHistory,
                 colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard.copy(alpha = buttonAlpha)),
-                modifier = Modifier.fillMaxHeight().weight(1f),
-                contentPadding = PaddingValues(horizontal = 4.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, BorderDivider)
+                modifier = Modifier.fillMaxHeight().weight(1.2f),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.5.dp, BorderDivider)
             ) {
-                Text("Past Sessions", style = MaterialTheme.typography.labelMedium.copy(color = MutedGrey), maxLines = 1, softWrap = false)
+                Text(
+                    text = "Past Sessions",
+                    style = MaterialTheme.typography.titleMedium.copy(color = MutedGrey, fontWeight = FontWeight.Bold),
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
         }
     }

@@ -22,38 +22,44 @@ val Inter = FontFamily.SansSerif
 val Typography = Typography(
     displayLarge = TextStyle(
         fontFamily = Rajdhani,
-        fontWeight = FontWeight.Bold,
-        fontSize = 64.sp,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 84.sp,
         color = PureWhite
     ),
     displayMedium = TextStyle(
         fontFamily = Rajdhani,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 48.sp,
+        fontWeight = FontWeight.Bold,
+        fontSize = 54.sp,
         color = PureWhite
     ),
     headlineMedium = TextStyle(
         fontFamily = Inter,
-        fontWeight = FontWeight.Medium,
-        fontSize = 24.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 26.sp,
         color = PureWhite
     ),
     titleLarge = TextStyle(
         fontFamily = Inter,
-        fontWeight = FontWeight.Medium,
-        fontSize = 20.sp,
+        fontWeight = FontWeight.Bold,
+        fontSize = 22.sp,
+        color = PureWhite
+    ),
+    titleMedium = TextStyle(
+        fontFamily = Inter,
+        fontWeight = FontWeight.Bold,
+        fontSize = 18.sp,
         color = PureWhite
     ),
     bodyLarge = TextStyle(
         fontFamily = Inter,
-        fontWeight = FontWeight.Normal,
+        fontWeight = FontWeight.Medium,
         fontSize = 16.sp,
         color = MutedGrey
     ),
     labelMedium = TextStyle(
         fontFamily = Inter,
-        fontWeight = FontWeight.Normal,
-        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 13.sp,
         color = MutedGrey
     )
 )

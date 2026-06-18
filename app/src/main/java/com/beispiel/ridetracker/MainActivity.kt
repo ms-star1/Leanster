@@ -212,25 +212,21 @@ class MainActivity : ComponentActivity() {
                             val points by service.sessionPoints.collectAsStateWithLifecycle()
                             val corners by service.detectedCorners.collectAsStateWithLifecycle()
                             
-                            // Map backdrop for summary
-                            Box(modifier = Modifier.fillMaxSize()) {
-                                MapContent(service, mapView, highlightColor = highlightColor)
-                                
-                                SessionSummaryScreen(
-                                    points = points,
-                                    corners = corners,
-                                    isMetric = isMetric,
-                                    highlightColor = highlightColor,
-                                    onSave = {
-                                        service.confirmSaveSession()
-                                        currentTab = 0
-                                    },
-                                    onDiscard = {
-                                        service.discardSession()
-                                        currentTab = 0
-                                    }
-                                )
-                            }
+                            SessionSummaryScreen(
+                                points = points,
+                                corners = corners,
+                                isMetric = isMetric,
+                                highlightColor = highlightColor,
+                                onSave = {
+                                    service.confirmSaveSession()
+                                    currentTab = 0
+                                },
+                                onDiscard = {
+                                    service.discardSession()
+                                    currentTab = 0
+                                },
+                                mapView = mapView
+                            )
                         }
                         3 -> {
                             val sessions by service.pastSessions.collectAsStateWithLifecycle()
@@ -248,6 +244,7 @@ class MainActivity : ComponentActivity() {
                                 HistoryMenuScreen(
                                     sessions = sessions,
                                     highlightColor = highlightColor,
+                                    isMetric = isMetric,
                                     onBack = { currentTab = 0 },
                                     onDeleteSession = { sessionId ->
                                         service.deleteSession(sessionId)
@@ -266,7 +263,8 @@ class MainActivity : ComponentActivity() {
                                         session = selectedSession!!,
                                         isMetric = isMetric,
                                         highlightColor = highlightColor,
-                                        onClose = { selectedSession = null }
+                                        onClose = { selectedSession = null },
+                                        mapView = mapView
                                     )
                                 }
                             }
