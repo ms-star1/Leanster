@@ -1095,41 +1095,6 @@ fun DashboardPortraitLayout(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Toggle Buttons for View
-        StartupAnimatedElement(order = 3, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = { onActiveViewChange("lean") },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (activeView == "lean") highlightColor else SurfaceCard.copy(alpha = if (activeView == "map") 0.8f else 1.0f),
-                        contentColor = if (activeView == "lean") DeepCarbon else PureWhite
-                    ),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                    border = if (activeView == "lean") null else BorderStroke(1.dp, BorderDivider)
-                ) {
-                    Text("Lean-o-Meter", style = MaterialTheme.typography.labelLarge)
-                }
-                Button(
-                    onClick = { onActiveViewChange("map") },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (activeView == "map") highlightColor else SurfaceCard.copy(alpha = 0.8f),
-                        contentColor = if (activeView == "map") DeepCarbon else PureWhite
-                    ),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                    border = if (activeView == "map") null else BorderStroke(1.dp, BorderDivider)
-                ) {
-                    Text("Map view", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
-
         Spacer(modifier = Modifier.height(12.dp))
 
         // Main Display (Horizon or Map Spacer)
