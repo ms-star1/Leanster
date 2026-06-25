@@ -1273,49 +1273,6 @@ fun DashboardLandscapeLayout(
                         .zIndex(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // View toggles at top of Left Column
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(40.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = { onActiveViewChange("lean") },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (activeView == "lean") highlightColor else SurfaceCard,
-                                contentColor = if (activeView == "lean") DeepCarbon else PureWhite
-                            ),
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "Horizon",
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                textAlign = TextAlign.Center,
-                                maxLines = 1
-                            )
-                        }
-                        Button(
-                            onClick = { onActiveViewChange("map") },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (activeView == "map") highlightColor else SurfaceCard,
-                                contentColor = if (activeView == "map") DeepCarbon else PureWhite
-                            ),
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                            contentPadding = PaddingValues(0.dp),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "Map",
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                textAlign = TextAlign.Center,
-                                maxLines = 1
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.weight(1f))
-
                     if (activeView == "map") {
                         ControlButtonsContentV3(
                             isRecording = isRecording,
@@ -1384,8 +1341,8 @@ fun DashboardLandscapeLayout(
                 ) {
                     // Start and Stop buttons on the bottom left
                     Column(
-                        modifier = Modifier.weight(1.5f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.weight(0.9f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Button(
                             onClick = {
@@ -1396,13 +1353,13 @@ fun DashboardLandscapeLayout(
                                 containerColor = if (isRecording && !isPaused) AlertRed else highlightColor,
                                 contentColor = Color.Black
                             ),
-                            modifier = Modifier.fillMaxWidth().height(60.dp),
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
                             shape = RoundedCornerShape(16.dp),
                             border = BorderStroke(1.5.dp, Color.Black.copy(alpha = 0.3f))
                         ) {
                             Text(
                                 text = if (isRecording && !isPaused) "PAUSE SESSION" else if (isPaused) "RESUME SESSION" else "START SESSION",
-                                style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter, color = Color.Black, fontWeight = FontWeight.ExtraBold),
+                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = Inter, color = Color.Black, fontWeight = FontWeight.ExtraBold),
                                 maxLines = 1,
                                 softWrap = false
                             )
@@ -1447,22 +1404,24 @@ fun DashboardLandscapeLayout(
                                 contentColor = AlertRed
                             ),
                             border = BorderStroke(2.5.dp, AlertRed),
-                            modifier = Modifier.fillMaxWidth().height(60.dp),
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
                             shape = RoundedCornerShape(16.dp)
                         ) {
                             Text(
                                 text = "STOP",
-                                style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp),
+                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = Inter, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp),
                                 maxLines = 1,
                                 softWrap = false
                             )
                         }
                     }
 
-                    // Remaining 3 Value Boxes
+                    Spacer(modifier = Modifier.weight(1.2f))
+
+                    // Remaining 3 Value Boxes — narrower, grouped in bottom right corner
                     Row(
-                        modifier = Modifier.weight(3f),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.weight(1.8f),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         CustomizableMetricCard(
                             selectedMetric = box1Metric,
@@ -1471,7 +1430,7 @@ fun DashboardLandscapeLayout(
                             rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
                             sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
                             sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 60.dp,
+                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 52.dp,
                             onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
                             onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
                         )
@@ -1483,7 +1442,7 @@ fun DashboardLandscapeLayout(
                             rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
                             sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
                             sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 60.dp,
+                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 52.dp,
                             onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
                             onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
                         )
@@ -1495,7 +1454,7 @@ fun DashboardLandscapeLayout(
                             rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
                             sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
                             sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 60.dp,
+                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 52.dp,
                             onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
                             onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
                         )
