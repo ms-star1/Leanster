@@ -190,7 +190,8 @@ class MainActivity : ComponentActivity() {
                             onShowHistory = { currentTab = 3 },
                             onShowSettings = { currentTab = 1 },
                             mapView = mapView,
-                            hasPlayedStartupAnimation = hasPlayedStartupAnimation
+                            hasPlayedStartupAnimation = hasPlayedStartupAnimation,
+                            onResetMaxLean = { service.resetMaxLean1000m() }
                         ) {
                             hasPlayedStartupAnimation = true
                         }

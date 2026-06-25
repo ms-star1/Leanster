@@ -11,6 +11,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -117,7 +119,8 @@ fun DashboardViewContentMock() {
             sessionMaxRight = 0f,
             rollingMaxLeft = 0f,
             rollingMaxRight = 0f,
-            rollingMax1000m = 0f
+            rollingMax1000m = 0f,
+            rollingDistanceTarget = 1000
         )
     } else {
         DashboardPortraitLayout(
@@ -145,7 +148,8 @@ fun DashboardViewContentMock() {
             sessionMaxRight = 0f,
             rollingMaxLeft = 0f,
             rollingMaxRight = 0f,
-            rollingMax1000m = 0f
+            rollingMax1000m = 0f,
+            rollingDistanceTarget = 1000
         )
     }
 }
@@ -163,6 +167,7 @@ fun DashboardView(
     onShowSettings: () -> Unit,
     mapView: org.maplibre.android.maps.MapView,
     hasPlayedStartupAnimation: Boolean = false,
+    onResetMaxLean: () -> Unit = { service.resetMaxLean1000m() },
     onStartupAnimationFinished: () -> Unit = {}
 ) {
     val corners by service.detectedCorners.collectAsStateWithLifecycle()
@@ -174,6 +179,7 @@ fun DashboardView(
     val rollingMaxLeft by service.rollingMaxLeft.collectAsStateWithLifecycle()
     val rollingMaxRight by service.rollingMaxRight.collectAsStateWithLifecycle()
     val rollingMax1000m by service.rollingMax1000m.collectAsStateWithLifecycle()
+    val rollingDistanceTarget by service.rollingDistanceTarget.collectAsStateWithLifecycle()
     val isRecording by service.isRecording.collectAsStateWithLifecycle()
     val isPaused by service.isPaused.collectAsStateWithLifecycle()
 
@@ -244,7 +250,9 @@ fun DashboardView(
                 sessionMaxRight = sessionMaxRight,
                 rollingMaxLeft = rollingMaxLeft,
                 rollingMaxRight = rollingMaxRight,
-                rollingMax1000m = rollingMax1000m
+                rollingMax1000m = rollingMax1000m,
+                rollingDistanceTarget = rollingDistanceTarget,
+                onResetMaxLean = onResetMaxLean
             )
         } else {
             DashboardPortraitLayout(
@@ -272,7 +280,9 @@ fun DashboardView(
                 sessionMaxRight = sessionMaxRight,
                 rollingMaxLeft = rollingMaxLeft,
                 rollingMaxRight = rollingMaxRight,
-                rollingMax1000m = rollingMax1000m
+                rollingMax1000m = rollingMax1000m,
+                rollingDistanceTarget = rollingDistanceTarget,
+                onResetMaxLean = onResetMaxLean
             )
         }
     }
@@ -291,6 +301,11 @@ fun SettingsScreen(
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val vibrationFiltering by service.vibrationFiltering.collectAsStateWithLifecycle()
+    val forceFilter by service.forceFilterStandstill.collectAsStateWithLifecycle()
+    val isDevModeActive by service.isDevModeActive.collectAsStateWithLifecycle()
+
+    var devModeClickCount by remember { mutableIntStateOf(0) }
 
     Box(
         modifier = Modifier
@@ -306,9 +321,21 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "SETTINGS",
+                    text = "SETTINGS" + if (isDevModeActive) " (DEV MODE)" else "",
                     style = MaterialTheme.typography.titleLarge.copy(fontFamily = Inter, fontWeight = FontWeight.Bold),
-                    color = highlightColor
+                    color = highlightColor,
+                    modifier = Modifier.clickable {
+                        devModeClickCount++
+                        if (devModeClickCount >= 5) {
+                            service.isDevModeActive.value = !isDevModeActive
+                            devModeClickCount = 0
+                            android.widget.Toast.makeText(
+                                context,
+                                if (isDevModeActive) "Developer Mode Activated!" else "Developer Mode Deactivated!",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
                 )
                 IconButton(onClick = onBack) {
                     Text("✕", color = PureWhite, style = MaterialTheme.typography.titleLarge)
@@ -335,41 +362,6 @@ fun SettingsScreen(
                             .verticalScroll(scrollState1),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
-                                val color = when(colorName) {
-                                    "Yamaha Blue" -> YamahaBlue
-                                    "Ducati Red" -> DucatiRed
-                                    "Kawasaki Green" -> KawasakiGreen
-                                    "Pure White" -> PureWhiteHighlight
-                                    else -> NeonCyan
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .background(color, RoundedCornerShape(20.dp))
-                                        .clickable { onColorChange(colorName) }
-                                        .padding(4.dp)
-                                ) {
-                                    if (highlightColorName == colorName) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(DeepCarbon, RoundedCornerShape(20.dp))
-                                                .padding(4.dp)
-                                        ) {
-                                            Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(20.dp)))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
                         Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                         Row(
                             modifier = Modifier
@@ -400,6 +392,107 @@ fun SettingsScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Imperial (mph)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("VIBRATION FILTERING", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            listOf("Very Low", "Low", "Standard", "High", "Very High").forEach { level ->
+                                Button(
+                                    onClick = { service.setVibrationFiltering(level) },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(0.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (vibrationFiltering == level) highlightColor else SurfaceCard,
+                                        contentColor = if (vibrationFiltering == level) DeepCarbon else PureWhite
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(level, fontSize = 8.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("MAX LEAN DISTANCE WINDOW", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                        val rollingDistanceTarget by service.rollingDistanceTarget.collectAsStateWithLifecycle()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            listOf(100, 500, 1000, 2000, 5000).forEach { dist ->
+                                Button(
+                                    onClick = { service.setRollingDistanceTarget(dist) },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(0.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (rollingDistanceTarget == dist) highlightColor else SurfaceCard,
+                                        contentColor = if (rollingDistanceTarget == dist) DeepCarbon else PureWhite
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(if (dist >= 1000) "${dist / 1000}km" else "${dist}m", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+                            }
+                        }
+
+                        if (isDevModeActive) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("DEVELOPER OPTIONS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                            
+                            Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleSmall, color = MutedGrey)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
+                                    val color = when(colorName) {
+                                        "Yamaha Blue" -> YamahaBlue
+                                        "Ducati Red" -> DucatiRed
+                                        "Kawasaki Green" -> KawasakiGreen
+                                        "Pure White" -> PureWhiteHighlight
+                                        else -> NeonCyan
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .background(color, RoundedCornerShape(20.dp))
+                                            .clickable { onColorChange(colorName) }
+                                            .padding(4.dp)
+                                    ) {
+                                        if (highlightColorName == colorName) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(DeepCarbon, RoundedCornerShape(20.dp))
+                                                    .padding(4.dp)
+                                            ) {
+                                                Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(20.dp)))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { service.setForceFilterStandstill(!forceFilter) }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = forceFilter,
+                                    onCheckedChange = { service.setForceFilterStandstill(it) },
+                                    colors = CheckboxDefaults.colors(checkedColor = highlightColor, uncheckedColor = MutedGrey)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Force Filter at Standstill", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                            }
                         }
                     }
 
@@ -482,41 +575,6 @@ fun SettingsScreen(
                         .verticalScroll(scrollStateSingle),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
-                            val color = when(colorName) {
-                                "Yamaha Blue" -> YamahaBlue
-                                "Ducati Red" -> DucatiRed
-                                "Kawasaki Green" -> KawasakiGreen
-                                "Pure White" -> PureWhiteHighlight
-                                else -> NeonCyan
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .background(color, RoundedCornerShape(21.dp))
-                                    .clickable { onColorChange(colorName) }
-                                    .padding(4.dp)
-                            ) {
-                                if (highlightColorName == colorName) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(DeepCarbon, RoundedCornerShape(21.dp))
-                                            .padding(4.dp)
-                                    ) {
-                                        Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(21.dp)))
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
                     Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                     Row(
                         modifier = Modifier
@@ -547,6 +605,28 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Imperial (mph)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("VIBRATION FILTERING", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("Very Low", "Low", "Standard", "High", "Very High").forEach { level ->
+                            Button(
+                                onClick = { service.setVibrationFiltering(level) },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(0.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (vibrationFiltering == level) highlightColor else SurfaceCard,
+                                    contentColor = if (vibrationFiltering == level) DeepCarbon else PureWhite
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(level, fontSize = 8.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -611,6 +691,62 @@ fun SettingsScreen(
                     ) {
                         Text("RESET ALL-TIME MAX LEAN", fontWeight = FontWeight.Bold)
                     }
+
+                    if (isDevModeActive) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("DEVELOPER OPTIONS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                        
+                        Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleSmall, color = MutedGrey)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
+                                val color = when(colorName) {
+                                    "Yamaha Blue" -> YamahaBlue
+                                    "Ducati Red" -> DucatiRed
+                                    "Kawasaki Green" -> KawasakiGreen
+                                    "Pure White" -> PureWhiteHighlight
+                                    else -> NeonCyan
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(42.dp)
+                                        .background(color, RoundedCornerShape(21.dp))
+                                        .clickable { onColorChange(colorName) }
+                                        .padding(4.dp)
+                                ) {
+                                    if (highlightColorName == colorName) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(DeepCarbon, RoundedCornerShape(21.dp))
+                                                .padding(4.dp)
+                                        ) {
+                                            Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(21.dp)))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { service.setForceFilterStandstill(!forceFilter) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = forceFilter,
+                                onCheckedChange = { service.setForceFilterStandstill(it) },
+                                colors = CheckboxDefaults.colors(checkedColor = highlightColor, uncheckedColor = MutedGrey)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Force Filter at Standstill", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
                 }
             }
 
@@ -655,7 +791,9 @@ fun DashboardPortraitLayout(
     sessionMaxRight: Float,
     rollingMaxLeft: Float,
     rollingMaxRight: Float,
-    rollingMax1000m: Float
+    rollingMax1000m: Float,
+    rollingDistanceTarget: Int,
+    onResetMaxLean: () -> Unit = {}
 ) {
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
@@ -734,13 +872,14 @@ fun DashboardPortraitLayout(
             // Max 1000m Card
             StartupAnimatedElement(order = 2, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1.0f).fillMaxHeight()) {
                 MetricCard(
-                    title = "MAX 1000m",
+                    title = if (rollingDistanceTarget >= 1000) "MAX ${rollingDistanceTarget / 1000}km" else "MAX ${rollingDistanceTarget}m",
                     value = rollingMax1000m.toInt().toString(),
                     unit = "°",
                     color = PureWhite,
                     containerColor = if (activeView == "map") lerp(SurfaceCard, AlertRed, max1000mProgress).copy(alpha = 0.8f) else lerp(SurfaceCard, AlertRed, max1000mProgress),
                     modifier = Modifier.fillMaxHeight(),
-                    weight = FontWeight(700 + (max1000mProgress * 200).toInt())
+                    weight = FontWeight(700 + (max1000mProgress * 200).toInt()),
+                    onClick = onResetMaxLean
                 )
             }
         }
@@ -894,7 +1033,9 @@ fun DashboardLandscapeLayout(
     sessionMaxRight: Float,
     rollingMaxLeft: Float,
     rollingMaxRight: Float,
-    rollingMax1000m: Float
+    rollingMax1000m: Float,
+    rollingDistanceTarget: Int,
+    onResetMaxLean: () -> Unit = {}
 ) {
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
@@ -990,18 +1131,17 @@ fun DashboardLandscapeLayout(
                         else service.pauseRecording()
                     },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = highlightColor,
+                        containerColor = if (isRecording && !isPaused) AlertRed else highlightColor,
                         contentColor = Color.Black
                     ),
-                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
-                        text = if (isRecording && !isPaused) "PAUSE" else if (isPaused) "RESUME" else "START",
-                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = Inter, color = Color.Black)
-                        ,
-                        maxLines = 2,
-                        softWrap = true
+                        text = if (isRecording && !isPaused) "PAUSE SESSION" else if (isPaused) "RESUME SESSION" else "START SESSION",
+                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = Inter, color = Color.Black, fontWeight = FontWeight.ExtraBold),
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
 
@@ -1010,62 +1150,102 @@ fun DashboardLandscapeLayout(
                         onClick = { showStopDialog = true },
                         colors = ButtonDefaults.outlinedButtonColors(
                             containerColor = DeepCarbon,
-                            contentColor = highlightColor
+                            contentColor = AlertRed
                         ),
-                        border = BorderStroke(2.dp, highlightColor),
+                        border = BorderStroke(2.dp, AlertRed),
                         modifier = Modifier.fillMaxWidth().height(44.dp),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text(
-                            text = "STOP\nSESSION",
-                            style = MaterialTheme.typography.bodyMedium.copy(
+                            text = "STOP",
+                            style = MaterialTheme.typography.titleMedium.copy(
                                 fontFamily = Inter,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 1.sp,
                                 textAlign = TextAlign.Center
                             ),
-                            maxLines = 2,
-                            softWrap = true
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
 
-                // Calibrate & History
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(38.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = { service.calibrateSensors() },
-                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                        contentPadding = PaddingValues(0.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, BorderDivider)
-                    ) {
-                        Text(
-                            text = "Calibrate",
-                            style = MaterialTheme.typography.labelSmall.copy(color = MutedGrey, fontSize = 9.sp),
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
+                val interactionSource = remember { MutableInteractionSource() }
+                val isPressed by interactionSource.collectIsPressedAsState()
+                val scale by animateFloatAsState(
+                    targetValue = if (isPressed) 0.9f else 1f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                    label = "scale"
+                )
 
-                    Button(
-                        onClick = onShowHistory,
-                        colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                        contentPadding = PaddingValues(0.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, BorderDivider)
+                val context = LocalContext.current
+                var showCalibrationToast by remember { mutableStateOf(false) }
+                
+                if (showCalibrationToast) {
+                    LaunchedEffect(Unit) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "3D Sensor Matrix Calibrated!\n\nPlease repeat this step every time you rotate or adjust your phone mount.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        delay(100)
+                        showCalibrationToast = false
+                    }
+                }
+
+                // Calibrate
+                Button(
+                    onClick = { 
+                        service.calibrateSensors() 
+                        showCalibrationToast = true
+                    },
+                    interactionSource = interactionSource,
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
+                    modifier = Modifier.fillMaxWidth().height(40.dp).graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    },
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, highlightColor.copy(alpha = 0.5f))
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Default.Refresh,
+                            contentDescription = "Calibrate",
+                            tint = highlightColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "History",
-                            style = MaterialTheme.typography.labelSmall.copy(color = MutedGrey, fontSize = 9.sp),
-                            maxLines = 1,
-                            softWrap = false
+                            "CALIBRATE 3D",
+                            color = PureWhite,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
                         )
                     }
+                }
+
+                // History
+                Button(
+                    onClick = onShowHistory,
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
+                    modifier = Modifier.fillMaxWidth().height(38.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, BorderDivider)
+                ) {
+                    Text(
+                        text = "Past Sessions",
+                        style = MaterialTheme.typography.labelSmall.copy(color = MutedGrey, fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
 
                 // Settings & Rotate at the very bottom
@@ -1089,7 +1269,6 @@ fun DashboardLandscapeLayout(
                         )
                     }
 
-                    val context = LocalContext.current
                     Button(
                         onClick = {
                             val activity = context as? AndroidActivity
@@ -1121,19 +1300,19 @@ fun DashboardLandscapeLayout(
                 LeanHorizonIndicator(
                     lean = currentLean,
                     highlightColor = highlightColor,
-                    modifier = Modifier
+                    modifier = androidx.compose.ui.Modifier
                         .weight(1.8f)
                         .fillMaxHeight(),
                     sizeScale = 1.0f,
                     yOffsetPercent = 0.0f
                 )
             } else {
-                Spacer(modifier = Modifier.weight(1.8f))
+                Spacer(modifier = androidx.compose.ui.Modifier.weight(1.8f))
             }
 
             // Right Column: All stats / data (weight remaining 1.0f)
             Column(
-                modifier = Modifier
+                modifier = androidx.compose.ui.Modifier
                     .weight(1.0f)
                     .fillMaxHeight()
                     .zIndex(1f),
@@ -1200,14 +1379,15 @@ fun DashboardLandscapeLayout(
                     )
                     
                     MetricCard(
-                        title = "1000m MAX",
+                        title = if (rollingDistanceTarget >= 1000) "${rollingDistanceTarget / 1000}km MAX" else "${rollingDistanceTarget}m MAX",
                         value = rollingMax1000m.toInt().toString(),
                         unit = "°",
                         color = PureWhite,
                         containerColor = lerp(SurfaceCard, AlertRed, max1000mProgress),
                         modifier = Modifier.weight(1f),
                         weight = FontWeight(700 + (max1000mProgress * 200).toInt()),
-                        height = 60.dp
+                        height = 60.dp,
+                        onClick = onResetMaxLean
                     )
                 }
 
@@ -1234,6 +1414,8 @@ fun DashboardLandscapeLayout(
         }
     }
 }
+
+
 
 @Composable
 fun StartupAnimatedElement(
@@ -1409,6 +1591,21 @@ fun ControlButtonsContentV3(
             }
         }
 
+        val context = LocalContext.current
+        var showCalibrationToast by remember { mutableStateOf(false) }
+        
+        if (showCalibrationToast) {
+            LaunchedEffect(Unit) {
+                android.widget.Toast.makeText(
+                    context,
+                    "3D Sensor Matrix Calibrated!\n\nPlease repeat this step every time you rotate or adjust your phone mount.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                delay(100)
+                showCalibrationToast = false
+            }
+        }
+
         // Bottom row: Settings, Calibrate, Past Sessions
         Row(
             modifier = Modifier.fillMaxWidth().height(62.dp),
@@ -1428,6 +1625,54 @@ fun ControlButtonsContentV3(
                     tint = MutedGrey,
                     modifier = Modifier.size(24.dp)
                 )
+            }
+
+            val interactionSource = remember { MutableInteractionSource() }
+            val isPressed by interactionSource.collectIsPressedAsState()
+            val scale by animateFloatAsState(
+                targetValue = if (isPressed) 0.9f else 1f,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                label = "scale"
+            )
+
+            Button(
+                onClick = { 
+                    onCalibrate()
+                    showCalibrationToast = true
+                },
+                interactionSource = interactionSource,
+                colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard.copy(alpha = buttonAlpha)),
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .weight(1f)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    },
+                contentPadding = PaddingValues(0.dp),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.5.dp, highlightColor.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Default.Refresh,
+                        contentDescription = "Calibrate",
+                        tint = highlightColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "CALIBRATE 3D",
+                        color = PureWhite,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                    )
+                }
             }
 
             val context = LocalContext.current
@@ -1452,22 +1697,6 @@ fun ControlButtonsContentV3(
                     contentDescription = "Rotate Screen",
                     tint = highlightColor,
                     modifier = Modifier.size(24.dp)
-                )
-            }
-
-            Button(
-                onClick = onCalibrate,
-                colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard.copy(alpha = buttonAlpha)),
-                modifier = Modifier.fillMaxHeight().weight(1f),
-                contentPadding = PaddingValues(horizontal = 8.dp),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.5.dp, BorderDivider)
-            ) {
-                Text(
-                    text = "Calibrate",
-                    style = MaterialTheme.typography.titleMedium.copy(color = MutedGrey, fontWeight = FontWeight.Bold),
-                    maxLines = 1,
-                    softWrap = false
                 )
             }
 
@@ -1662,7 +1891,7 @@ fun HistoryRow(
             color = color,
             maxLines = 1,
             softWrap = false,
-            modifier = Modifier.weight(0.8f),
+            modifier = Modifier.weight(if (compact) 1.8f else 0.8f),
             textAlign = TextAlign.End
         )
         if (onReset != null) {
@@ -1703,37 +1932,50 @@ fun MetricCard(
         border = BorderStroke(1.dp, BorderDivider),
         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
     ) {
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = if (height < 70.dp) 10.sp else 12.sp),
-                color = MutedGrey,
-                maxLines = 1,
-                softWrap = false
-            )
-            Row(verticalAlignment = Alignment.Bottom) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (onClick != null) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Reset",
+                    tint = MutedGrey.copy(alpha = 0.6f),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(if (height < 70.dp) 12.dp else 16.dp)
+                )
+            }
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Text(
-                    text = value,
-                    style = MaterialTheme.typography.displaySmall.copy(
-                        fontSize = if (height < 70.dp) 18.sp else 24.sp,
-                        fontWeight = weight,
-                        fontFamily = Rajdhani
-                    ),
-                    color = color,
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium.copy(fontSize = if (height < 70.dp) 10.sp else 12.sp),
+                    color = MutedGrey,
                     maxLines = 1,
                     softWrap = false
                 )
-                if (unit.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        text = unit,
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = if (height < 70.dp) 8.sp else 9.sp),
-                        color = MutedGrey,
-                        modifier = Modifier.padding(bottom = if (height < 70.dp) 2.dp else 4.dp, start = 2.dp)
+                        text = value,
+                        style = MaterialTheme.typography.displaySmall.copy(
+                            fontSize = if (height < 70.dp) 18.sp else 24.sp,
+                            fontWeight = weight,
+                            fontFamily = Rajdhani
+                        ),
+                        color = color,
+                        maxLines = 1,
+                        softWrap = false
                     )
+                    if (unit.isNotEmpty()) {
+                        Text(
+                            text = unit,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = if (height < 70.dp) 8.sp else 9.sp),
+                            color = MutedGrey,
+                            modifier = Modifier.padding(bottom = if (height < 70.dp) 2.dp else 4.dp, start = 2.dp)
+                        )
+                    }
                 }
             }
         }

@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.beispiel.ridetracker
 
 import androidx.compose.foundation.Canvas
@@ -392,8 +394,8 @@ fun SessionSummaryOverlay(
                 ) {
                     Column(
                         modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
+                            .weight(1.2f)
+                            .fillMaxHeight(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         SummaryStatsGrid(
@@ -405,7 +407,8 @@ fun SessionSummaryOverlay(
                             cornersCount = session.corners.size,
                             isMetric = isMetric,
                             highlightColor = highlightColor,
-                            isLandscape = true
+                            isLandscape = true,
+                            modifier = Modifier.weight(1.5f)
                         )
 
                         // Embedded Vector Map in Left Column (Landscape)
@@ -413,7 +416,7 @@ fun SessionSummaryOverlay(
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(180.dp),
+                                    .weight(1f),
                                 colors = CardDefaults.cardColors(containerColor = SurfaceCard),
                                 border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
                                 shape = RoundedCornerShape(12.dp)
@@ -445,22 +448,24 @@ fun SessionSummaryOverlay(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
+                        } else {
+                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                     Column(
                         modifier = Modifier
                             .weight(1.5f)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor)
+                        SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1f))
                     }
                 }
             } else {
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .verticalScroll(rememberScrollState())
+                        .fillMaxWidth()
                 ) {
                     SummaryStatsGrid(
                         totalDistance = totalDistance,
@@ -471,16 +476,17 @@ fun SessionSummaryOverlay(
                         cornersCount = session.corners.size,
                         isMetric = isMetric,
                         highlightColor = highlightColor,
-                        isLandscape = false
+                        isLandscape = false,
+                        modifier = Modifier.weight(0.7f)
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     // Embedded Vector Map in Scrollable Content (Portrait)
                     if (mapView != null && session.points.isNotEmpty()) {
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(200.dp),
+                                .weight(0.8f),
                             colors = CardDefaults.cardColors(containerColor = SurfaceCard),
                             border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
                             shape = RoundedCornerShape(12.dp)
@@ -512,10 +518,10 @@ fun SessionSummaryOverlay(
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor)
+                    SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1.5f))
                 }
             }
 
@@ -649,8 +655,8 @@ fun SessionSummaryScreen(
                 ) {
                     Column(
                         modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
+                            .weight(1.2f)
+                            .fillMaxHeight(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         SummaryStatsGrid(
@@ -662,7 +668,8 @@ fun SessionSummaryScreen(
                             cornersCount = corners.size,
                             isMetric = isMetric,
                             highlightColor = highlightColor,
-                            isLandscape = true
+                            isLandscape = true,
+                            modifier = Modifier.weight(1.5f)
                         )
 
                         // Embedded Vector Map in Left Column (Landscape)
@@ -670,7 +677,7 @@ fun SessionSummaryScreen(
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(180.dp),
+                                    .weight(1f),
                                 colors = CardDefaults.cardColors(containerColor = SurfaceCard),
                                 border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
                                 shape = RoundedCornerShape(12.dp)
@@ -702,22 +709,24 @@ fun SessionSummaryScreen(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
+                        } else {
+                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                     Column(
                         modifier = Modifier
                             .weight(1.5f)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor)
+                        SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1f))
                     }
                 }
             } else {
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .verticalScroll(rememberScrollState())
+                        .fillMaxWidth()
                 ) {
                     SummaryStatsGrid(
                         totalDistance = totalDistance,
@@ -728,16 +737,17 @@ fun SessionSummaryScreen(
                         cornersCount = corners.size,
                         isMetric = isMetric,
                         highlightColor = highlightColor,
-                        isLandscape = false
+                        isLandscape = false,
+                        modifier = Modifier.weight(0.7f)
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     // Embedded Vector Map in Scrollable Content (Portrait)
                     if (mapView != null && points.isNotEmpty()) {
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(200.dp),
+                                .weight(0.8f),
                             colors = CardDefaults.cardColors(containerColor = SurfaceCard),
                             border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
                             shape = RoundedCornerShape(12.dp)
@@ -769,10 +779,10 @@ fun SessionSummaryScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor)
+                    SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1.5f))
                 }
             }
 
@@ -841,7 +851,11 @@ fun SummaryStatCard(
                 Text(
                     text = value,
                     style = MaterialTheme.typography.displayMedium.copy(
-                        fontSize = if (compact) 22.sp else 28.sp,
+                        fontSize = if (value.length > 8) {
+                            if (compact) 16.sp else 20.sp
+                        } else {
+                            if (compact) 22.sp else 28.sp
+                        },
                         fontFamily = Rajdhani,
                         fontWeight = FontWeight.Bold,
                         color = color
@@ -1035,9 +1049,10 @@ fun SummaryStatsGrid(
     cornersCount: Int,
     isMetric: Boolean,
     highlightColor: Color,
-    isLandscape: Boolean = false
+    isLandscape: Boolean = false,
+    modifier: Modifier = Modifier
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 12.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(if (isLandscape) 6.dp else 12.dp)) {
         // Row 1
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1091,48 +1106,51 @@ fun SummaryGraphs(
     points: List<TelemetryPoint>,
     isMetric: Boolean,
     highlightColor: Color,
-    mutedHighlightColor: Color
+    mutedHighlightColor: Color,
+    modifier: Modifier = Modifier
 ) {
-    Text(
-        text = "Recorded Lean Angles",
-        style = MaterialTheme.typography.labelSmall,
-        color = mutedHighlightColor,
-        modifier = Modifier.padding(bottom = 4.dp)
-    )
-    TelemetryGraph(
-        points = points,
-        valueSelector = { it.leanAngle },
-        color = AlertRed,
-        unit = "°",
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(115.dp)
-            .background(SurfaceCard)
-            .border(1.dp, BorderDivider)
-    )
+    Column(modifier = modifier.fillMaxSize()) {
+        Text(
+            text = "Recorded Lean Angles",
+            style = MaterialTheme.typography.labelSmall,
+            color = mutedHighlightColor,
+            modifier = Modifier.padding(bottom = 2.dp)
+        )
+        TelemetryGraph(
+            points = points,
+            valueSelector = { it.leanAngle },
+            color = AlertRed,
+            unit = "°",
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .background(SurfaceCard)
+                .border(1.dp, BorderDivider)
+        )
 
-    Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-    Text(
-        text = "Recorded Speed",
-        style = MaterialTheme.typography.labelSmall,
-        color = mutedHighlightColor,
-        modifier = Modifier.padding(bottom = 4.dp)
-    )
-    TelemetryGraph(
-        points = points,
-        valueSelector = {
-            val speed = it.speedKmh.toFloat()
-            if (isMetric) speed else (speed * 0.621371f)
-        },
-        color = highlightColor,
-        unit = if (isMetric) "km/h" else "mph",
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(115.dp)
-            .background(SurfaceCard)
-            .border(1.dp, BorderDivider)
-    )
+        Text(
+            text = "Recorded Speed",
+            style = MaterialTheme.typography.labelSmall,
+            color = mutedHighlightColor,
+            modifier = Modifier.padding(bottom = 2.dp)
+        )
+        TelemetryGraph(
+            points = points,
+            valueSelector = {
+                val speed = it.speedKmh.toFloat()
+                if (isMetric) speed else (speed * 0.621371f)
+            },
+            color = highlightColor,
+            unit = if (isMetric) "km/h" else "mph",
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .background(SurfaceCard)
+                .border(1.dp, BorderDivider)
+        )
+    }
 }
 
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)

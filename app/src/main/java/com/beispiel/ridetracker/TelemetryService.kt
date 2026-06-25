@@ -50,6 +50,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val isRecording = MutableStateFlow(false)
     val isPaused = MutableStateFlow(false)
     val isWheelieAlert = MutableStateFlow(false)
+    val isDevModeActive = MutableStateFlow(false)
 
     // All-time records (persisted in SharedPreferences)
     val allTimeMaxLeft = MutableStateFlow(0f)
@@ -63,10 +64,24 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val rollingMaxLeft = MutableStateFlow(0f)
     val rollingMaxRight = MutableStateFlow(0f)
     val rollingMax1000m = MutableStateFlow(0f)
+    val rollingDistanceTarget = MutableStateFlow(1000)
 
-    // Calibration Offsets
-    private var leanOffset = 0f
-    private var pitchOffset = 0f
+    // 3D Mounting Calibration Matrix
+    private var rDeviceToBike = FloatArray(9) { if (it % 4 == 0) 1f else 0f }
+    private var isCalibrating = false
+
+    // Complementary Filter & Gyro variables
+    private var lastTimestamp = 0L
+    private var leanAngle = 0f // In degrees
+    private var pitchAngle = 0f // In degrees
+    private var lastTargetLean = 0f
+    private var lastTargetPitch = 0f
+    private var hasAbsoluteTarget = false
+    private val alpha = 0.95f // Complementary filter coefficient
+    private var currentGyroRollRate = 0f
+    private var currentGyroYawRate = 0f
+    val vibrationFiltering = MutableStateFlow("Standard")
+    val forceFilterStandstill = MutableStateFlow(false)
 
     // Sensitivity Thresholds
     private val WHEELIE_THRESHOLD = 15.0f // Degrees
@@ -97,17 +112,49 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         allTimeMaxLeft.value = prefs.getFloat("allTimeMaxLeft", 0f)
         allTimeMaxRight.value = prefs.getFloat("allTimeMaxRight", 0f)
         allTimeMaxPitch.value = prefs.getFloat("allTimeMaxPitch", 0f)
+        for (i in 0..8) {
+            rDeviceToBike[i] = prefs.getFloat("rDeviceToBike_$i", if (i % 4 == 0) 1f else 0f)
+        }
+        
+        // Load default vibration filter preset
+        vibrationFiltering.value = prefs.getString("vibration_filtering", "Standard") ?: "Standard"
+        forceFilterStandstill.value = prefs.getBoolean("force_filter_standstill", false)
+        rollingDistanceTarget.value = prefs.getInt("rolling_distance_target", 1000)
         
         loadSessions()
         startForegroundNotification()
         startDataStreams()
     }
 
+    fun setVibrationFiltering(level: String) {
+        vibrationFiltering.value = level
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().putString("vibration_filtering", level).apply()
+    }
+
+    fun setForceFilterStandstill(enabled: Boolean) {
+        forceFilterStandstill.value = enabled
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().putBoolean("force_filter_standstill", enabled).apply()
+    }
+
+    fun setRollingDistanceTarget(targetMeters: Int) {
+        rollingDistanceTarget.value = targetMeters
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().putInt("rolling_distance_target", targetMeters).apply()
+    }
+
     private fun startDataStreams() {
-        // Start 50Hz Rotation Vector Loop
+        // Start Rotation Vector Loop with SENSOR_DELAY_GAME
         val rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         rotationVectorSensor?.let {
-            sensorManager.registerListener(this, it, 20000) // 20,000 microseconds = 50 Hz
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+
+        // Start Gyroscope Loop with SENSOR_DELAY_GAME
+        val gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        gyroSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
 
         // Internal high-frequency location updates
@@ -185,8 +232,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     }
 
     fun calibrateSensors() {
-        leanOffset = currentLean.value + leanOffset
-        pitchOffset = currentPitch.value + pitchOffset
+        isCalibrating = true
     }
 
     fun resetAllTimeLean() {
@@ -225,6 +271,10 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         rollingMax1000m.value = 0f
     }
 
+    fun resetMaxLean1000m() {
+        rollingMax1000m.value = 0f
+    }
+
     fun resetAllTimeRecords() {
         resetAllTimeLean()
         resetMaxPitch()
@@ -246,14 +296,41 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         detectedCorners.value = emptyList()
     }
 
+
+
+    private fun multiply3x3(a: FloatArray, b: FloatArray): FloatArray {
+        val result = FloatArray(9)
+        for (i in 0..2) {
+            for (j in 0..2) {
+                result[i * 3 + j] = a[i * 3 + 0] * b[0 * 3 + j] +
+                                    a[i * 3 + 1] * b[1 * 3 + j] +
+                                    a[i * 3 + 2] * b[2 * 3 + j]
+            }
+        }
+        return result
+    }
+
+    private fun transpose3x3(a: FloatArray): FloatArray {
+        val result = FloatArray(9)
+        for (i in 0..2) {
+            for (j in 0..2) {
+                result[j * 3 + i] = a[i * 3 + j]
+            }
+        }
+        return result
+    }
+
+    private fun multiplyMatrixVector(matrix: FloatArray, vector: FloatArray): FloatArray {
+        return floatArrayOf(
+            matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
+            matrix[3] * vector[0] + matrix[4] * vector[1] + matrix[5] * vector[2],
+            matrix[6] * vector[0] + matrix[7] * vector[1] + matrix[8] * vector[2]
+        )
+    }
+
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null || event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+        if (event == null) return
 
-        // Compute Rotation Matrix from hardware sensor fusion
-        val rotationMatrix = FloatArray(9)
-        SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-
-        // Adjust coordinate system based on display rotation
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         @Suppress("DEPRECATION")
         val displayRotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -266,96 +343,249 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             windowManager.defaultDisplay.rotation
         }
 
-        val remappedMatrix = FloatArray(9)
-        when (displayRotation) {
-            Surface.ROTATION_90 -> {
-                SensorManager.remapCoordinateSystem(
-                    rotationMatrix,
-                    SensorManager.AXIS_Y,
-                    SensorManager.AXIS_MINUS_X,
-                    remappedMatrix
-                )
-            }
-            Surface.ROTATION_270 -> {
-                SensorManager.remapCoordinateSystem(
-                    rotationMatrix,
-                    SensorManager.AXIS_MINUS_Y,
-                    SensorManager.AXIS_X,
-                    remappedMatrix
-                )
-            }
-            Surface.ROTATION_180 -> {
-                SensorManager.remapCoordinateSystem(
-                    rotationMatrix,
-                    SensorManager.AXIS_MINUS_X,
-                    SensorManager.AXIS_MINUS_Y,
-                    remappedMatrix
-                )
-            }
-            else -> {
-                System.arraycopy(rotationMatrix, 0, remappedMatrix, 0, 9)
-            }
-        }
-
-        val orientationAngles = FloatArray(3)
-        SensorManager.getOrientation(remappedMatrix, orientationAngles)
-
-        // Retrieve rotation matrix third row to compute pitch/lean angles independent of mounting tilt.
-        // remappedMatrix[6], remappedMatrix[7], remappedMatrix[8] are the components of the world vertical (Z) axis
-        // projected onto the device's local X, Y, and Z axes.
-        val r6 = remappedMatrix[6]
-        val r7 = remappedMatrix[7]
-        val r8 = remappedMatrix[8]
-
-        // Roll (Side to side) and Pitch (Front to back) in Radians -> Convert to Degrees
-        val azimuth = Math.toDegrees(orientationAngles[0].toDouble()).toFloat()
-        
-        // True lean angle (lateral tilt) compensating for the device being angled/pitched towards the driver
-        val rawLean = Math.toDegrees(Math.atan2(-r6.toDouble(), kotlin.math.sqrt((r7 * r7 + r8 * r8).toDouble()))).toFloat()
-        
-        // True pitch angle (front-to-back tilt) compensating for lateral lean
-        val rawPitch = Math.toDegrees(Math.atan2(-r7.toDouble(), r8.toDouble())).toFloat()
-
         val speedKmh = currentSpeed.value
-        if (speedKmh <= 2.0 || lastLocation?.hasBearing() == false) {
-            // Apply a -25° offset to correct the systematic compass deviation on motorcycles
-            currentHeading.value = (azimuth - 25f + 360) % 360
+        val gpsSpeedMPS = (speedKmh / 3.6).toFloat()
+
+        if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
+            if (gpsSpeedMPS <= 0.5f && !forceFilterStandstill.value) {
+                return
+            }
+
+            val timestamp = event.timestamp
+            if (lastTimestamp == 0L) {
+                lastTimestamp = timestamp
+                return
+            }
+            val dt = (timestamp - lastTimestamp) / 1000000000f
+            lastTimestamp = timestamp
+
+            if (dt <= 0f || dt > 0.1f) return
+
+            // Map gyroscope from physical device frame directly to bike frame
+            val omegaBike = multiplyMatrixVector(rDeviceToBike, event.values)
+            // omegaBike[0] is pitch rate (Bike X-axis)
+            // omegaBike[1] is roll rate (Bike Y-axis)
+            // omegaBike[2] is yaw rate (Bike Z-axis)
+            
+            // Standard right hand rule:
+            // Thumb Right (Bike X) -> Pitch Up is positive.
+            // Thumb Forward (Bike Y) -> Roll Right is positive.
+            val gyroPitchRateDeg = Math.toDegrees(omegaBike[0].toDouble()).toFloat()
+            val gyroRollRateDeg = Math.toDegrees(omegaBike[1].toDouble()).toFloat()
+
+            // 1. High frequency gyroscope integration
+            val integratedLean = leanAngle + (gyroRollRateDeg * dt)
+            val integratedPitch = pitchAngle + (gyroPitchRateDeg * dt)
+
+            // 2. Langsame GPS-Referenz (GPS speed and Yaw Rate centripetal calculation)
+            val gravity = 9.81f
+            // Left turn = positive omegaBike[2], causes negative gpsLeanRad (Left Lean)
+            val gpsLeanRad = kotlin.math.atan((gpsSpeedMPS * -omegaBike[2]) / gravity)
+            val gpsLeanDeg = Math.toDegrees(gpsLeanRad.toDouble()).toFloat()
+
+            // 3. Fusion (Complementary Filter)
+            if (hasAbsoluteTarget) {
+                val level = vibrationFiltering.value
+                val alphaFast: Float
+                val alphaSlow: Float
+                when (level) {
+                    "Very Low" -> {
+                        // Very low filtering, prioritizes hardware reference more heavily. Fast drift correction.
+                        alphaFast = 0.992f
+                        alphaSlow = 0.985f
+                    }
+                    "Low" -> {
+                        alphaFast = 0.995f
+                        alphaSlow = 0.990f
+                    }
+                    "High" -> {
+                        alphaFast = 0.999f
+                        alphaSlow = 0.998f
+                    }
+                    "Very High" -> {
+                        // Very high filtering, strongly relies on gyroscope integration. High immunity to vibration, slow drift correction.
+                        alphaFast = 0.9998f
+                        alphaSlow = 0.999f
+                    }
+                    else -> { // Standard
+                        alphaFast = 0.998f
+                        alphaSlow = 0.995f
+                    }
+                }
+
+                val isMovingFast = kotlin.math.abs(gyroRollRateDeg) > 5.0f
+                val dynamicAlpha = if (isMovingFast) alphaFast else alphaSlow
+                
+                // Blend gravity and centripetal lean to prevent linear acceleration from causing drift via yaw bias
+                val yawRateAbs = kotlin.math.abs(omegaBike[2])
+                val turnFactor = ((yawRateAbs - 0.02f) * 16.66f).coerceIn(0f, 1f)
+                val referenceLean = (turnFactor * gpsLeanDeg) + ((1f - turnFactor) * lastTargetLean)
+                
+                leanAngle = (dynamicAlpha * integratedLean) + ((1f - dynamicAlpha) * referenceLean)
+                pitchAngle = (dynamicAlpha * integratedPitch) + ((1f - dynamicAlpha) * lastTargetPitch)
+            } else {
+                leanAngle = integratedLean
+                pitchAngle = integratedPitch
+            }
+
+            // 4. Begrenzung auf physikalische Maximalwerte
+            val finalLean = leanAngle.coerceIn(-65f, 65f)
+            val finalPitch = pitchAngle.coerceIn(-20f, 90f)
+
+            // 5. Update live dashboard flows instantly
+            currentLean.value = finalLean
+            currentPitch.value = finalPitch
+            isWheelieAlert.value = finalPitch > WHEELIE_THRESHOLD
+
+            // 6. Update recording metrics and stats
+            if (isRecording.value && !isPaused.value) {
+                if (finalLean < allTimeMaxLeft.value) allTimeMaxLeft.value = finalLean
+                if (finalLean > allTimeMaxRight.value) allTimeMaxRight.value = finalLean
+                
+                if (finalPitch >= 10.0f && finalPitch > allTimeMaxPitch.value) {
+                    allTimeMaxPitch.value = finalPitch
+                }
+
+                if (finalLean < sessionMaxLeft.value) sessionMaxLeft.value = finalLean
+                if (finalLean > sessionMaxRight.value) sessionMaxRight.value = finalLean
+                if (finalPitch > sessionMaxPitch.value) {
+                    sessionMaxPitch.value = finalPitch
+                }
+                
+                if (finalLean < rollingMaxLeft.value) {
+                    rollingMaxLeft.value = finalLean
+                }
+                if (finalLean > rollingMaxRight.value) {
+                    rollingMaxRight.value = finalLean
+                }
+
+                processTelemetrySnapshop(finalLean, finalPitch)
+            }
+            return
         }
-        val correctedLean = rawLean - leanOffset
-        val correctedPitch = -(rawPitch - pitchOffset) // Inverted: Front UP is now positive
 
-        currentLean.value = correctedLean
-        currentPitch.value = correctedPitch
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
 
-        // Wheelie Alert Logic
-        isWheelieAlert.value = correctedPitch > WHEELIE_THRESHOLD
+        val rDeviceToWorld = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(rDeviceToWorld, event.values)
 
-        if (isRecording.value && !isPaused.value) {
-            // Update all-time records
-            if (correctedLean < allTimeMaxLeft.value) allTimeMaxLeft.value = correctedLean
-            if (correctedLean > allTimeMaxRight.value) allTimeMaxRight.value = correctedLean
+        if (isCalibrating) {
+            // Find Display Y vector in Device Frame
+            val vDispY = when (displayRotation) {
+                Surface.ROTATION_90 -> floatArrayOf(1f, 0f, 0f)
+                Surface.ROTATION_180 -> floatArrayOf(0f, -1f, 0f)
+                Surface.ROTATION_270 -> floatArrayOf(-1f, 0f, 0f)
+                else -> floatArrayOf(0f, 1f, 0f)
+            }
+            // Find Device -Z vector (back of phone)
+            val vMinusZ = floatArrayOf(0f, 0f, -1f)
             
-            // Only register Wheelie (pitch) values of 10 degrees and above
-            if (correctedPitch >= 10.0f && correctedPitch > allTimeMaxPitch.value) {
-                allTimeMaxPitch.value = correctedPitch
-            }
-
-            // Update session records
-            if (correctedLean < sessionMaxLeft.value) sessionMaxLeft.value = correctedLean
-            if (correctedLean > sessionMaxRight.value) sessionMaxRight.value = correctedLean
-            if (correctedPitch > sessionMaxPitch.value) {
-                sessionMaxPitch.value = correctedPitch
-            }
+            // Map both to World Frame
+            val wDispY = multiplyMatrixVector(rDeviceToWorld, vDispY)
+            val wMinusZ = multiplyMatrixVector(rDeviceToWorld, vMinusZ)
             
-            // Update rolling max (simplified logic here, updated also by location)
-            if (correctedLean < rollingMaxLeft.value) {
-                rollingMaxLeft.value = correctedLean
+            // Project combined "Forward" intent to the horizontal plane (Z=0)
+            val fx = wDispY[0] + wMinusZ[0]
+            val fy = wDispY[1] + wMinusZ[1]
+            
+            val len = kotlin.math.sqrt((fx * fx + fy * fy).toDouble()).toFloat()
+            val byW_X = if (len > 0.001f) fx / len else 0f
+            val byW_Y = if (len > 0.001f) fy / len else 1f
+            
+            // Construct R_bike_to_world matrix
+            // Bike X (Right) = (byW_Y, -byW_X, 0)
+            // Bike Y (Forward) = (byW_X, byW_Y, 0)
+            // Bike Z (Up) = (0, 0, 1)
+            val rBikeToWorld = floatArrayOf(
+                byW_Y,  byW_X, 0f,
+               -byW_X,  byW_Y, 0f,
+                0f,     0f,    1f
+            )
+            
+            // R_device_to_bike = R_bike_to_world^T * R_device_to_world
+            val rWorldToBike = transpose3x3(rBikeToWorld)
+            rDeviceToBike = multiply3x3(rWorldToBike, rDeviceToWorld)
+            isCalibrating = false
+            
+            val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            val editor = prefs.edit()
+            for (i in 0..8) {
+                editor.putFloat("rDeviceToBike_$i", rDeviceToBike[i])
             }
-            if (correctedLean > rollingMaxRight.value) {
-                rollingMaxRight.value = correctedLean
-            }
+            editor.apply()
+        }
 
-            processTelemetrySnapshop(correctedLean, correctedPitch)
+        // R_bike_to_world = R_device_to_world * R_device_to_bike^T
+        val rBikeToWorld = multiply3x3(rDeviceToWorld, transpose3x3(rDeviceToBike))
+
+        // Extract pitch and roll from the R_bike_to_world matrix
+        // Row 3 (indices 6, 7, 8) represents the Up vector in Bike frame
+        val upX = rBikeToWorld[6]
+        val upY = rBikeToWorld[7]
+        val upZ = rBikeToWorld[8]
+
+        // Roll (Lean): positive when leaning right -> Up vector moves to left (-X in bike frame)
+        // atan2(-upX, upZ) is mathematically positive for Right Lean
+        val rawLean = Math.toDegrees(Math.atan2(-upX.toDouble(), upZ.toDouble())).toFloat()
+        
+        // Pitch: positive when pitching up (wheelie) -> Up vector moves backward (-Y in bike frame)
+        // asin(-upY) is mathematically positive for Wheelie
+        val rawPitch = Math.toDegrees(kotlin.math.asin(-upY.toDouble().coerceIn(-1.0, 1.0))).toFloat()
+
+        // Compass Heading
+        val orientationAngles = FloatArray(3)
+        SensorManager.getOrientation(rBikeToWorld, orientationAngles)
+        val azimuth = Math.toDegrees(orientationAngles[0].toDouble()).toFloat()
+
+        if (speedKmh <= 2.0 || lastLocation?.hasBearing() == false) {
+            currentHeading.value = (azimuth + 360) % 360
+        }
+
+        val correctedLean = rawLean
+        val correctedPitch = rawPitch
+
+        // Store the target values from rotation vector
+        lastTargetLean = correctedLean
+        lastTargetPitch = correctedPitch
+        hasAbsoluteTarget = true
+
+        // Im Stand oder bei Hand-Tests: Werte direkt und OHNE Verzögerung aktualisieren! (außer erzwungen im Dev-Mode)
+        if (gpsSpeedMPS <= 0.5f && !forceFilterStandstill.value) {
+            val finalLean = correctedLean.coerceIn(-65f, 65f)
+            val finalPitch = correctedPitch.coerceIn(-20f, 90f)
+
+            leanAngle = finalLean
+            pitchAngle = finalPitch
+
+            // Update live dashboard flows instantly
+            currentLean.value = finalLean
+            currentPitch.value = finalPitch
+            isWheelieAlert.value = finalPitch > WHEELIE_THRESHOLD
+
+            // Update recording metrics and stats if active
+            if (isRecording.value && !isPaused.value) {
+                if (finalLean < allTimeMaxLeft.value) allTimeMaxLeft.value = finalLean
+                if (finalLean > allTimeMaxRight.value) allTimeMaxRight.value = finalLean
+                
+                if (finalPitch >= 10.0f && finalPitch > allTimeMaxPitch.value) {
+                    allTimeMaxPitch.value = finalPitch
+                }
+
+                if (finalLean < sessionMaxLeft.value) sessionMaxLeft.value = finalLean
+                if (finalLean > sessionMaxRight.value) sessionMaxRight.value = finalLean
+                if (finalPitch > sessionMaxPitch.value) {
+                    sessionMaxPitch.value = finalPitch
+                }
+                
+                if (finalLean < rollingMaxLeft.value) {
+                    rollingMaxLeft.value = finalLean
+                }
+                if (finalLean > rollingMaxRight.value) {
+                    rollingMaxRight.value = finalLean
+                }
+
+                processTelemetrySnapshop(finalLean, finalPitch)
+            }
         }
     }
 
@@ -388,10 +618,10 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         val updatedList = sessionPoints.value + point
         sessionPoints.value = updatedList
 
-        // Calculate rolling max lean in last 1000m
+        // Calculate rolling max lean in the target distance
         var accumulatedDistance = 0.0
         var maxLeanVal = 0f
-        var pointsChecked = 0
+        val targetDist = rollingDistanceTarget.value.toDouble()
         for (i in updatedList.indices.reversed()) {
             val pt = updatedList[i]
             accumulatedDistance += pt.distanceDelta
@@ -399,11 +629,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             if (currentAbsLean > maxLeanVal) {
                 maxLeanVal = currentAbsLean
             }
-            pointsChecked++
-            if (accumulatedDistance >= 1000.0) {
-                break
-            }
-            if (pointsChecked >= 100 && accumulatedDistance == 0.0) {
+            if (accumulatedDistance >= targetDist) {
                 break
             }
         }
