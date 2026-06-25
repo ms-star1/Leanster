@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.view.WindowManager
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -185,6 +186,7 @@ fun DashboardView(
     val rollingDistanceTarget by service.rollingDistanceTarget.collectAsStateWithLifecycle()
     val isRecording by service.isRecording.collectAsStateWithLifecycle()
     val isPaused by service.isPaused.collectAsStateWithLifecycle()
+    val livePbComparison by service.livePbComparison.collectAsStateWithLifecycle()
 
     var activeView by remember { mutableStateOf("lean") } // "lean" or "map"
     val context = LocalContext.current
@@ -287,6 +289,67 @@ fun DashboardView(
                 rollingDistanceTarget = rollingDistanceTarget,
                 onResetMaxLean = onResetMaxLean
             )
+        }
+
+        livePbComparison?.let { pb ->
+            LivePbOverlay(
+                pb = pb,
+                highlightColor = highlightColor,
+                onDismiss = { service.livePbComparison.value = null }
+            )
+        }
+    }
+}
+
+@Composable
+fun LivePbOverlay(pb: PbComparison, highlightColor: Color, onDismiss: () -> Unit) {
+    var visible by remember { mutableStateOf(true) }
+    LaunchedEffect(pb) {
+        visible = true
+        delay(3000)
+        visible = false
+        onDismiss()
+    }
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + slideInVertically(initialOffsetY = { -it / 2 }),
+        exit = fadeOut(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp, start = 16.dp, end = 16.dp)
+    ) {
+        val cardColor = if (pb.isNewPb) Color(0xFF1B5E20) else Color(0xFF4A3800)
+        val label = if (pb.isNewPb) "NEW PB" else "NEAR PB"
+        val valueText = if (pb.isNewPb)
+            "${pb.achievedLean.toInt()}°"
+        else
+            "${pb.deltaLean.toInt()}° off best"
+
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = cardColor.copy(alpha = 0.92f),
+            border = BorderStroke(1.dp, if (pb.isNewPb) Color(0xFF4CAF50) else Color(0xFFFFC107)),
+            modifier = Modifier.wrapContentWidth()
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (pb.isNewPb) Color(0xFF4CAF50) else Color(0xFFFFC107),
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.5.sp
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = valueText,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

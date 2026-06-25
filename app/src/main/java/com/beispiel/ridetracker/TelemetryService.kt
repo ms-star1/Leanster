@@ -19,6 +19,8 @@ import android.util.Log
 import android.view.Surface
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import com.beispiel.ridetracker.database.AppDatabase
+import com.beispiel.ridetracker.database.entities.SessionCornerEntity
 import com.google.gson.Gson
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -93,6 +95,12 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     private var lastLocation: Location? = null
     private var lastLoggedLocation: Location? = null
 
+    // Per-corner PB system
+    val livePbComparison = MutableStateFlow<PbComparison?>(null)
+    private lateinit var cornerMatchingEngine: CornerMatchingEngine
+    private lateinit var voiceCoach: VoiceCoach
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     // USB GPS configurations
     private var usbPort: UsbSerialPort? = null
     private var usbJob: Job? = null
@@ -121,6 +129,10 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         forceFilterStandstill.value = prefs.getBoolean("force_filter_standstill", false)
         rollingDistanceTarget.value = prefs.getInt("rolling_distance_target", 1000)
         
+        val dao = AppDatabase.getInstance(this).cornerDao()
+        cornerMatchingEngine = CornerMatchingEngine(dao)
+        voiceCoach = VoiceCoach(this)
+
         loadSessions()
         startForegroundNotification()
         startDataStreams()
@@ -191,8 +203,10 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         }
         isRecording.value = true
         isPaused.value = false
+        livePbComparison.value = null
         resetSessionStats()
         currentSessionStartTime = System.currentTimeMillis()
+        voiceCoach.trigger(VoiceCoach.CoachEvent.SESSION_START)
     }
 
     fun pauseRecording() {
@@ -204,6 +218,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         if (!isRecording.value) return
         isRecording.value = false
         isPaused.value = false
+        voiceCoach.trigger(VoiceCoach.CoachEvent.SESSION_END)
         
         // Finalize all-time records in preferences
         val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
@@ -669,8 +684,46 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
                         corner.endIndex = currentIndex
                         currentState = RideState.STRAIGHT
                         activeCorner = null
-                        // Force updates down Flow pipeline
                         detectedCorners.value = detectedCorners.value.toList()
+
+                        if (isRecording.value && !isPaused.value) {
+                            val closedCorner = corner
+                            val pointsSnapshot = updatedList.toList()
+                            val sessionId = "Session_${currentSessionStartTime}"
+                            serviceScope.launch {
+                                val result = cornerMatchingEngine.matchOrCreateCorner(
+                                    closedCorner, pointsSnapshot, sessionId
+                                ) ?: return@launch
+
+                                AppDatabase.getInstance(this@TelemetryService).cornerDao()
+                                    .insertSessionCorner(SessionCornerEntity(
+                                        sessionId = sessionId,
+                                        cornerId = result.corner.id,
+                                        leanAchieved = result.leanAchieved,
+                                        speedAtPeak = result.speedAtPeak,
+                                        cornerTimestamp = System.currentTimeMillis()
+                                    ))
+
+                                val comparison = PbComparison(
+                                    cornerId = result.corner.id,
+                                    pbLean = if (result.isNewPb) result.leanAchieved
+                                             else result.existingPb?.bestLean ?: result.leanAchieved,
+                                    achievedLean = result.leanAchieved,
+                                    isNewPb = result.isNewPb
+                                )
+                                livePbComparison.value = comparison
+
+                                if (result.isNewPb) {
+                                    voiceCoach.trigger(VoiceCoach.CoachEvent.NEW_PB, result.leanAchieved)
+                                } else {
+                                    val pb = result.existingPb
+                                    if (pb != null && result.leanAchieved >= pb.bestLean * 0.93f) {
+                                        voiceCoach.trigger(VoiceCoach.CoachEvent.NEAR_PB,
+                                            pb.bestLean - result.leanAchieved)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -838,8 +891,12 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    fun getVoiceCoach(): VoiceCoach = voiceCoach
+
     override fun onDestroy() {
         usbJob?.cancel()
+        serviceScope.cancel()
+        voiceCoach.shutdown()
         try { usbPort?.close() } catch (e: Exception) {}
         sensorManager.unregisterListener(this)
         try { locationManager.removeUpdates(this) } catch (e: Exception) {}
