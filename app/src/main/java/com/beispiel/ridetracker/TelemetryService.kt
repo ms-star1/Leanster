@@ -11,6 +11,8 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -18,6 +20,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.WindowManager
+import kotlin.math.abs as absF
 import androidx.core.app.NotificationCompat
 import com.beispiel.ridetracker.database.AppDatabase
 import com.beispiel.ridetracker.database.entities.SessionCornerEntity
@@ -71,6 +74,12 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     // 3D Mounting Calibration Matrix
     private var rDeviceToBike = FloatArray(9) { if (it % 4 == 0) 1f else 0f }
     private var isCalibrating = false
+    val isCalibrated = MutableStateFlow(false)
+
+    // Calibration Watch Engine
+    val calibrationAlert = MutableStateFlow<String?>(null)
+    private var calibrationToneGen: ToneGenerator? = null
+    private var calibrationWarmupUntil = 0L
 
     // Complementary Filter & Gyro variables
     private var lastTimestamp = 0L
@@ -104,6 +113,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     // USB GPS configurations
     private var usbPort: UsbSerialPort? = null
     private var usbJob: Job? = null
+    val isUsbGpsConnected = MutableStateFlow(false)
 
     inner class TelemetryBinder : Binder() {
         fun getService(): TelemetryService = this@TelemetryService
@@ -123,6 +133,10 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         for (i in 0..8) {
             rDeviceToBike[i] = prefs.getFloat("rDeviceToBike_$i", if (i % 4 == 0) 1f else 0f)
         }
+        isCalibrated.value = false
+        // Give the filter time to settle before the watch engine begins checking deltas.
+        // Without this, watchPrevLean/Pitch start at 0f and the first real reading fires a false alert.
+        if (isCalibrated.value) calibrationWarmupUntil = System.currentTimeMillis() + 7000L
         
         // Load default vibration filter preset
         vibrationFiltering.value = prefs.getString("vibration_filtering", "Standard") ?: "Standard"
@@ -134,6 +148,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         voiceCoach = VoiceCoach(this)
 
         loadSessions()
+        startCalibrationWatchEngine()
         startForegroundNotification()
         startDataStreams()
     }
@@ -248,6 +263,92 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
 
     fun calibrateSensors() {
         isCalibrating = true
+    }
+
+    fun dismissCalibrationAlert() {
+        calibrationAlert.value = null
+        calibrationToneGen?.stopTone()
+        calibrationToneGen?.release()
+        calibrationToneGen = null
+    }
+
+    private fun triggerCalibrationAlertSound() {
+        try {
+            calibrationToneGen?.release()
+            calibrationToneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+            calibrationToneGen?.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 10000)
+        } catch (e: Exception) {
+            Log.e("CalibWatch", "Tone failed: ${e.message}")
+        }
+    }
+
+    private fun startCalibrationWatchEngine() {
+        serviceScope.launch {
+            // New monitoring loop: Check calibration status every 5 seconds if recording
+            launch {
+                while (isActive) {
+                    if (isRecording.value && !isCalibrated.value) {
+                        stopRecording()
+                        Log.d("TelemetryService", "Calibration lost during recording, stopping session.")
+                    }
+                    delay(5000L)
+                }
+            }
+
+            var watchPrevLean = 0f
+            var watchPrevPitch = 0f
+            var sustainedHighLeanCount = 0
+            delay(3000L) // let sensors settle on startup
+            while (true) {
+                delay(120L) // ~8 Hz
+                val lean = currentLean.value
+                val pitch = currentPitch.value
+
+                if (!isCalibrated.value || calibrationAlert.value != null) {
+                    watchPrevLean = lean; watchPrevPitch = pitch
+                    sustainedHighLeanCount = 0
+                    continue
+                }
+                if (System.currentTimeMillis() < calibrationWarmupUntil) {
+                    watchPrevLean = lean; watchPrevPitch = pitch
+                    sustainedHighLeanCount = 0
+                    continue
+                }
+
+                val leanDelta = absF(lean - watchPrevLean)
+                val pitchDelta = absF(pitch - watchPrevPitch)
+
+                // Count consecutive samples where lean stays above 55° (impossible sustained on a real bike)
+                if (absF(lean) > 55f) sustainedHighLeanCount++ else sustainedHighLeanCount = 0
+
+                val reason = when {
+                    absF(lean) > 70f ->
+                        "Extreme lean angle detected: ${lean.toInt()}°\nPhone may have slipped off the mount."
+                    absF(pitch) > 75f ->
+                        "Extreme pitch angle detected: ${pitch.toInt()}°\nPhone may have rotated on the mount."
+                    leanDelta > 35f ->
+                        "Sudden lean shift of ${leanDelta.toInt()}° detected.\nPhone may have moved on the mount."
+                    pitchDelta > 35f ->
+                        "Sudden pitch shift of ${pitchDelta.toInt()}° detected.\nPhone may have rotated on the mount."
+                    sustainedHighLeanCount > 41 ->
+                        "Lean held at ${lean.toInt()}° for 5+ seconds.\nPhone may have shifted on the mount."
+                    else -> null
+                }
+
+                if (reason != null) {
+                    isCalibrated.value = false
+                    androidx.preference.PreferenceManager
+                        .getDefaultSharedPreferences(this@TelemetryService)
+                        .edit().putBoolean("isCalibrated", false).apply()
+                    calibrationAlert.value = reason
+                    triggerCalibrationAlertSound()
+                    sustainedHighLeanCount = 0
+                }
+
+                watchPrevLean = lean
+                watchPrevPitch = pitch
+            }
+        }
     }
 
     fun resetAllTimeLean() {
@@ -521,13 +622,17 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             val rWorldToBike = transpose3x3(rBikeToWorld)
             rDeviceToBike = multiply3x3(rWorldToBike, rDeviceToWorld)
             isCalibrating = false
-            
+
             val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
             val editor = prefs.edit()
             for (i in 0..8) {
                 editor.putFloat("rDeviceToBike_$i", rDeviceToBike[i])
             }
+            editor.putBoolean("isCalibrated", true)
+            editor.putLong("calibration_timestamp", System.currentTimeMillis())
             editor.apply()
+            isCalibrated.value = true
+            calibrationWarmupUntil = System.currentTimeMillis() + 2500L
         }
 
         // R_bike_to_world = R_device_to_world * R_device_to_bike^T
@@ -745,6 +850,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             port.open(connection)
             port.setParameters(9600, 8, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1)
             usbPort = port
+            isUsbGpsConnected.value = true
 
             // Read loop for incoming 10Hz NMEA Strings
             usbJob = CoroutineScope(Dispatchers.IO).launch {
@@ -863,6 +969,23 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         return file
     }
 
+    fun exportAllSessionsToCsv(): File? {
+        val sessions = pastSessions.value
+        if (sessions.isEmpty()) return null
+
+        val dir = getExternalFilesDir(null)
+        val file = File(dir, "AllRides_${System.currentTimeMillis()}.csv")
+        FileWriter(file).use { writer ->
+            writer.write("SessionID,Timestamp,Latitude,Longitude,SpeedKmh,LeanAngle,PitchAngle\n")
+            sessions.forEach { session ->
+                session.points.forEach { pt ->
+                    writer.write("${session.id},${pt.timestamp},${pt.latitude},${pt.longitude},${pt.speedKmh},${pt.leanAngle},${pt.pitchAngle}\n")
+                }
+            }
+        }
+        return file
+    }
+
     override fun onLocationChanged(location: Location) {
         lastLocation = location
         currentLocation.value = location
@@ -878,9 +1001,9 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
 
         val notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("MotoTelemetry Active")
-            .setContentText("Logging orientation metrics at 50Hz...")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("RideTracker")
+            .setContentText("Sensor telemetry active")
+            .setSmallIcon(R.drawable.ic_launcher_fg_white)
             .build()
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -897,6 +1020,8 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         usbJob?.cancel()
         serviceScope.cancel()
         voiceCoach.shutdown()
+        calibrationToneGen?.release()
+        calibrationToneGen = null
         try { usbPort?.close() } catch (e: Exception) {}
         sensorManager.unregisterListener(this)
         try { locationManager.removeUpdates(this) } catch (e: Exception) {}

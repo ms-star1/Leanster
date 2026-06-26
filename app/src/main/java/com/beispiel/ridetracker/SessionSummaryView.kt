@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -53,40 +54,41 @@ fun HistoryMenuScreen(
     onDeleteSession: (String) -> Unit,
     onSelectSession: (RideSession) -> Unit,
     onExportSession: (RideSession) -> Unit,
+    onExportAll: (() -> Unit)? = null,
     highlightColor: Color = NeonCyan,
-    isMetric: Boolean = true
+    isMetric: Boolean = true,
+    onShowSettings: () -> Unit = {}
 ) {
     val mutedHighlightColor = when (highlightColor) {
-        YamahaBlue -> MutedYamahaBlue
-        DucatiRed -> MutedDucatiRed
-        KawasakiGreen -> MutedKawasakiGreen
+        YamahaBlue       -> MutedYamahaBlue
+        DucatiRed        -> MutedDucatiRed
+        KawasakiGreen    -> MutedKawasakiGreen
+        KtmOrange        -> MutedKtmOrange
+        HondaRed         -> MutedHondaRed
+        BmwBlue          -> MutedBmwBlue
+        TriumphGold      -> MutedTriumphGold
+        HusqvarnaYellow  -> MutedHusqvarnaYellow
         PureWhiteHighlight -> MutedWhiteHighlight
         else -> MutedCyan
     }
 
     val demoSession = remember { createDemoSession() }
-
     var sessionToDelete by remember { mutableStateOf<String?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
-    var showReportCard by remember { mutableStateOf(false) }
 
     if (sessionToDelete != null) {
         AlertDialog(
             onDismissRequest = { sessionToDelete = null },
             containerColor = SurfaceCard,
             title = { Text("Delete Session?", style = MaterialTheme.typography.titleLarge) },
-            text = { Text("Are you sure you want to delete this session? This action cannot be undone.", style = MaterialTheme.typography.bodyLarge) },
+            text = { Text("This action cannot be undone.", style = MaterialTheme.typography.bodyLarge) },
             confirmButton = {
-                TextButton(onClick = {
-                    onDeleteSession(sessionToDelete!!)
-                    sessionToDelete = null
-                }) {
+                TextButton(onClick = { onDeleteSession(sessionToDelete!!); sessionToDelete = null }) {
                     Text("DELETE", color = AlertRed, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { sessionToDelete = null }) {
-                    Text("CANCEL", style = MaterialTheme.typography.bodyLarge, color = PureWhite)
+                    Text("CANCEL", color = PureWhite)
                 }
             }
         )
@@ -94,127 +96,180 @@ fun HistoryMenuScreen(
 
     val allDisplaySessions = remember(sessions) { listOf(demoSession) + sessions }
 
-    val filteredSessions = remember(allDisplaySessions, searchQuery) {
-        if (searchQuery.isBlank()) {
-            allDisplaySessions
-        } else {
-            allDisplaySessions.filter { session ->
-                val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-                val dateStr = dateFormat.format(java.util.Date(session.startTime))
-                dateStr.contains(searchQuery, ignoreCase = true) ||
-                session.id.contains(searchQuery, ignoreCase = true)
+    // Group sessions by month/year
+    val monthFmt = remember { java.text.SimpleDateFormat("MMM yyyy", java.util.Locale.getDefault()) }
+    val todayStr = monthFmt.format(java.util.Date())
+    val grouped = remember(allDisplaySessions) {
+        allDisplaySessions.groupBy { monthFmt.format(java.util.Date(it.startTime)).uppercase() }
+    }
+    val sortedMonths = remember(grouped) { grouped.keys.sortedDescending() }
+
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            // ── Header ────────────────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("SESSIONS", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Inter)
+                Box(
+                    modifier = Modifier
+                        .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
+                        .clickable { onExportAll?.invoke() }
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                ) {
+                    Text("EXPORT ALL", fontSize = 12.sp, letterSpacing = 1.sp, color = highlightColor)
+                }
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── Session List ──────────────────────────────────────────────
+            if (allDisplaySessions.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("No sessions yet. Start riding!", color = MutedGrey, fontSize = 14.sp)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    sortedMonths.forEach { month ->
+                        val monthSessions = grouped[month] ?: return@forEach
+                        item {
+                            Text(
+                                text = month,
+                                fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 8.dp)
+                            )
+                        }
+                        item { HorizontalDivider(color = BorderDivider) }
+                        items(monthSessions) { session ->
+                            val isDemo = session.id == DEMO_SESSION_ID
+                            val globalIdx = allDisplaySessions.indexOf(session) + 1
+                            SessionHistoryRow(
+                                session = session,
+                                rideIndex = globalIdx,
+                                isDemo = isDemo,
+                                isMetric = isMetric,
+                                highlightColor = highlightColor,
+                                onClick = { onSelectSession(session) },
+                                onDeleteRequest = { if (!isDemo) sessionToDelete = session.id }
+                            )
+                            HorizontalDivider(color = Color(0xFF111510))
+                        }
+                    }
+                    item { Spacer(Modifier.height(80.dp)) } // space for bottom nav
+                }
+            }
+        }
+
+        // ── Bottom Nav ────────────────────────────────────────────────────
+        Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).background(DeepCarbon)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 10.dp).padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SessionNavItem("DIAL", false, highlightColor, onBack)
+                SessionNavItem("SESSIONS", true, highlightColor) {}
+                Text("⚙", fontSize = 18.sp, color = MutedGrey, modifier = Modifier.clickable { onShowSettings() })
             }
         }
     }
+}
 
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+@Composable
+private fun SessionNavItem(label: String, isActive: Boolean, highlightColor: Color, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick)) {
+        Text(label, fontSize = 12.sp, letterSpacing = 1.2.sp,
+            color = if (isActive) highlightColor else MutedGrey,
+            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+            fontFamily = FontFamily.SansSerif)
+        if (isActive) {
+            Spacer(Modifier.height(3.dp))
+            Box(Modifier.width(20.dp).height(1.5.dp).background(highlightColor, RoundedCornerShape(1.dp)))
+        }
+    }
+}
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DeepCarbon)
-            .padding(16.dp)
+@Composable
+private fun SessionHistoryRow(
+    session: RideSession,
+    rideIndex: Int,
+    isDemo: Boolean,
+    isMetric: Boolean,
+    highlightColor: Color,
+    onClick: () -> Unit,
+    onDeleteRequest: () -> Unit
+) {
+    val dateFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
+    val todayFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
+    val today = todayFmt.format(java.util.Date())
+    val dateStr = dateFmt.format(java.util.Date(session.startTime))
+    val isToday = dateStr == today
+
+    val durMs = if (session.endTime > session.startTime) session.endTime - session.startTime else 0L
+    val h = durMs / 3600000; val m = (durMs % 3600000) / 60000; val s = (durMs % 60000) / 1000
+    val durStr = if (h > 0) "%02d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+    val distKm = session.points.sumOf { it.distanceDelta } / 1000.0
+    val distStr = if (isMetric) "%.1f km".format(distKm) else "%.1f mi".format(distKm * 0.621371)
+
+    Row(
+        modifier = Modifier.fillMaxWidth().background(if (isToday || isDemo) Color(0xFF0B150A) else Color.Transparent).clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(bottom = 16.dp)
-        ) {
-            Button(
-                onClick = onBack,
-                colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
-                border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("Back", style = MaterialTheme.typography.labelLarge, color = PureWhite)
-            }
-            Spacer(modifier = Modifier.width(16.dp))
-            Text(
-                "MY RIDES",
-                style = MaterialTheme.typography.headlineMedium.copy(fontFamily = Inter),
-                color = highlightColor
-            )
-            Spacer(Modifier.weight(1f))
-            OutlinedButton(
-                onClick = { showReportCard = !showReportCard },
-                colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = if (showReportCard) highlightColor.copy(alpha = 0.15f) else Color.Transparent
-                ),
-                border = androidx.compose.foundation.BorderStroke(1.dp, if (showReportCard) highlightColor else BorderDivider),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                modifier = Modifier.height(32.dp)
-            ) {
-                Text("Report", color = if (showReportCard) highlightColor else MutedGrey,
-                    style = MaterialTheme.typography.labelSmall)
+        // Mini route thumbnail
+        Canvas(modifier = Modifier.size(width = 44.dp, height = 56.dp)) {
+            val pts = session.points
+            if (pts.size >= 2) {
+                val minLat = pts.minOf { it.latitude }; val maxLat = pts.maxOf { it.latitude }
+                val minLng = pts.minOf { it.longitude }; val maxLng = pts.maxOf { it.longitude }
+                val latR = (maxLat - minLat).coerceAtLeast(0.0001)
+                val lngR = (maxLng - minLng).coerceAtLeast(0.0001)
+                val latCorr = kotlin.math.cos(Math.toRadians((minLat + maxLat) / 2)).toFloat()
+                val gpsAsp = (lngR * latCorr / latR).toFloat()
+                val scrAsp = size.width / size.height
+                val scX: Float; val scY: Float; val ox: Float; val oy: Float
+                if (gpsAsp > scrAsp) { scX = size.width; scY = size.width / gpsAsp; ox = 0f; oy = (size.height - scY) / 2 }
+                else { scY = size.height; scX = size.height * gpsAsp; oy = 0f; ox = (size.width - scX) / 2 }
+                fun px(lng: Double) = (ox + ((lng - minLng) / lngR * scX)).toFloat()
+                fun py(lat: Double) = (oy + ((maxLat - lat) / latR * scY)).toFloat()
+                val path = androidx.compose.ui.graphics.Path()
+                pts.forEachIndexed { i, p -> if (i == 0) path.moveTo(px(p.longitude), py(p.latitude)) else path.lineTo(px(p.longitude), py(p.latitude)) }
+                drawPath(path, if (isToday || isDemo) highlightColor else Color(0xFF3A4036), style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+            } else {
+                drawCircle(Color(0xFF2A3028), 10.dp.toPx(), Offset(size.width / 2, size.height / 2))
             }
         }
 
-        if (showReportCard) {
-            ReportCardScreen(sessions = sessions, highlightColor = highlightColor, isMetric = isMetric)
-            return@Column
-        }
-
-        // Search Bar at Header
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-            placeholder = { Text("Filter sessions by date (e.g. 2026)...", color = MutedGrey) },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = PureWhite,
-                unfocusedTextColor = PureWhite,
-                focusedContainerColor = SurfaceCard,
-                unfocusedContainerColor = SurfaceCard,
-                focusedBorderColor = highlightColor,
-                unfocusedBorderColor = BorderDivider,
-                cursorColor = highlightColor
-            ),
-            shape = RoundedCornerShape(12.dp),
-            singleLine = true
-        )
-
-        if (filteredSessions.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = if (sessions.isEmpty()) "No sessions match search filter." else "No sessions match search filter.",
-                    style = MaterialTheme.typography.bodyLarge, color = MutedGrey
+                    text = if (isDemo) "DEMO" else "#$rideIndex",
+                    fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                    color = if (isToday || isDemo) highlightColor else PureWhite
+                )
+                Text(
+                    text = if (isToday) "Today" else dateStr,
+                    fontSize = 12.sp,
+                    color = if (isToday) highlightColor else MutedGrey,
+                    letterSpacing = 0.4.sp
                 )
             }
-        } else {
-            if (isLandscape) {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    items(filteredSessions) { session ->
-                        val idx = filteredSessions.indexOf(session) + 1
-                        SessionHistoryCard(
-                            session, onSelectSession,
-                            onDeleteRequest = { if (session.id != DEMO_SESSION_ID) sessionToDelete = it },
-                            onExportSession, highlightColor, mutedHighlightColor, isMetric,
-                            isDemo = session.id == DEMO_SESSION_ID, rideIndex = idx
-                        )
-                    }
-                }
-            } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    items(filteredSessions) { session ->
-                        val idx = filteredSessions.indexOf(session) + 1
-                        SessionHistoryCard(
-                            session, onSelectSession,
-                            onDeleteRequest = { if (session.id != DEMO_SESSION_ID) sessionToDelete = it },
-                            onExportSession, highlightColor, mutedHighlightColor, isMetric,
-                            isDemo = session.id == DEMO_SESSION_ID, rideIndex = idx
-                        )
-                    }
-                }
+            Text(
+                text = "$durStr · $distStr · ${session.corners.size} corners",
+                fontSize = 12.sp, color = MutedGrey, fontFamily = FontFamily.Monospace
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${session.maxLeanRight.toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (isToday || isDemo) highlightColor else PureWhite)
+                Text("R", fontSize = 10.sp, color = if (isToday || isDemo) highlightColor else MutedGrey)
+                Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
+                Text("${abs(session.maxLeanLeft).toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (isToday || isDemo) PureWhite else PureWhite.copy(0.7f))
+                Text("L", fontSize = 10.sp, color = MutedGrey)
             }
         }
+
+        Text("›", fontSize = 18.sp, color = MutedGrey)
     }
 }
 
@@ -348,13 +403,16 @@ fun SessionSummaryOverlay(
     mapView: org.maplibre.android.maps.MapView? = null,
     onGhostReplay: ((RideSession, RideSession) -> Unit)? = null,
     allSessions: List<RideSession> = emptyList(),
-    onDelete: ((String) -> Unit)? = null
+    onDelete: ((String) -> Unit)? = null,
+    rideNumber: Int = 0,
+    onShowCorners: ((RideSession) -> Unit)? = null,
+    onExportCsv: ((RideSession) -> Unit)? = null
 ) {
-    val dateFormat = remember { java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale.getDefault()) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val dateFormat = remember { java.text.SimpleDateFormat("MMM d, yyyy", java.util.Locale.getDefault()) }
     val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
     val dateStr = dateFormat.format(java.util.Date(session.startTime))
     val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
-    val endTimeStr = if (session.endTime > 0L) timeFormat.format(java.util.Date(session.endTime)) else "--:--"
 
     val totalDistanceRaw = session.points.sumOf { it.distanceDelta } / 1000.0
     val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
@@ -362,14 +420,25 @@ fun SessionSummaryOverlay(
     val maxSpeedRaw = session.points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
     val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
     val speedUnit = if (isMetric) "km/h" else "mph"
-    val avgSpeedRaw = if (session.points.isNotEmpty()) session.points.map { it.speedKmh }.average() else 0.0
-    val avgSpeed = if (isMetric) avgSpeedRaw else avgSpeedRaw * 0.621371
 
-    val durationMs = if (session.endTime > 0L) session.endTime - session.startTime else 0L
+    val maxLeft = abs(session.points.minByOrNull { it.leanAngle }?.leanAngle ?: session.maxLeanLeft)
+    val maxRight = session.points.maxByOrNull { it.leanAngle }?.leanAngle ?: session.maxLeanRight
+
+    val durationMs = if (session.endTime > 0L) session.endTime - session.startTime
+        else ((session.points.lastOrNull()?.timestamp ?: 0L) - (session.points.firstOrNull()?.timestamp ?: 0L))
     val durationStr = if (durationMs > 0) {
-        val h = durationMs / 3600000; val m = (durationMs % 3600000) / 60000
-        if (h > 0) "${h}h ${m}m" else "${m}m"
-    } else "--"
+        val totalSec = durationMs / 1000
+        "%02d:%02d".format(totalSec / 60, totalSec % 60)
+    } else "--:--"
+
+    val smoothness = remember(session) { rideSmoothness(session.points) }
+    val consistency = remember(session) { rideConsistency(session.points) }
+    val symmetry = remember(session) { rideSymmetry(maxLeft, maxRight) }
+
+    val cornerRows = remember(session, allSessions) { computeCornerRows(session, allSessions) }
+    val pbRows = remember(cornerRows) {
+        cornerRows.filter { it.isPb && it.bestLean != null && it.thisLean > it.bestLean }
+    }
 
     val ghostSession = remember(allSessions, session) {
         val others = allSessions.filter { it.id != session.id }
@@ -388,122 +457,237 @@ fun SessionSummaryOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(bottom = 24.dp)
         ) {
-            // ── Header ──
+            // ── Status row ──
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp, top = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
-                    Text("✕", color = PureWhite, style = MaterialTheme.typography.titleLarge)
+                Text(startTimeStr, fontSize = 12.sp, color = MutedGrey)
+                Spacer(Modifier.weight(1f))
+                if (rideNumber > 0) {
+                    Text("RIDE #$rideNumber", fontSize = 12.sp, color = MutedGrey,
+                        fontFamily = FontFamily.Monospace, letterSpacing = 0.6.sp)
                 }
-                Spacer(Modifier.width(4.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("SESSION DETAILS",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 14.sp),
-                        color = highlightColor)
-                    Text("$dateStr  ·  $startTimeStr – $endTimeStr",
-                        style = MaterialTheme.typography.labelSmall, color = MutedGrey)
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                    Text("✕", color = MutedGrey, fontSize = 18.sp)
                 }
-                Spacer(Modifier.size(36.dp))
             }
 
+            // ── Title ──
+            Column(modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 6.dp)) {
+                Text("RIDE DETAILS", fontSize = 11.sp, letterSpacing = 4.sp, color = MutedGrey, fontFamily = Inter)
+                Text(dateStr, fontSize = 32.sp, fontWeight = FontWeight.SemiBold, color = PureWhite,
+                    letterSpacing = (-0.2).sp, modifier = Modifier.padding(top = 4.dp))
+            }
+
+            // ── Top stats row ──
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .padding(start = 24.dp, end = 24.dp, top = 18.dp, bottom = 20.dp)
+                    .height(IntrinsicSize.Min)
+            ) {
+                TopStat("DISTANCE", "%.1f".format(totalDistance), distUnit, Modifier.weight(1f))
+                Box(Modifier.width(1.dp).fillMaxHeight().background(BorderDivider).padding(vertical = 2.dp))
+                TopStat("DURATION", durationStr, null, Modifier.weight(1f), mono = true)
+                Box(Modifier.width(1.dp).fillMaxHeight().background(BorderDivider))
+                TopStat("TOP SPEED", "${maxSpeed.toInt()}", speedUnit, Modifier.weight(1f))
+            }
             HorizontalDivider(color = BorderDivider)
 
-            // ── Stats grid — row 1 ──
-            Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OverlayStatCard("MAX LEAN L", "${abs(session.maxLeanLeft).toInt()}°", AlertRed, Modifier.weight(1f))
-                OverlayStatCard("MAX LEAN R", "${session.maxLeanRight.toInt()}°", highlightColor, Modifier.weight(1f))
-                OverlayStatCard("TOP SPEED", "${maxSpeed.toInt()} $speedUnit", PureWhite, Modifier.weight(1f))
-            }
-
-            // ── Stats grid — row 2 ──
-            Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OverlayStatCard("DISTANCE", "${"%.1f".format(totalDistance)} $distUnit", highlightColor, Modifier.weight(1f))
-                OverlayStatCard("AVG SPEED", "${avgSpeed.toInt()} $speedUnit", PureWhite, Modifier.weight(1f))
-                OverlayStatCard("DURATION", durationStr, PureWhite, Modifier.weight(1f))
-            }
-
-            // ── Stats grid — row 3 ──
-            Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OverlayStatCard("CORNERS", session.corners.size.toString(), highlightColor, Modifier.weight(1f))
-                OverlayStatCard("DATA PTS", session.points.size.toString(), PureWhite, Modifier.weight(1f))
-                Spacer(Modifier.weight(1f))
-            }
-
-            // ── Lean symmetry ──
-            if (session.maxLeanLeft != 0f || session.maxLeanRight != 0f) {
-                LeanSymmetryCard(
-                    leftMax = abs(session.maxLeanLeft),
-                    rightMax = session.maxLeanRight,
-                    highlightColor = highlightColor
-                )
-            }
-
-            // ── Corner breakdown ──
-            if (session.corners.isNotEmpty()) {
-                CornerBreakdownCard(
-                    corners = session.corners,
-                    points = session.points,
-                    isMetric = isMetric,
-                    highlightColor = highlightColor
-                )
-            }
-
-            // ── Ghost Replay button ──
-            if (onGhostReplay != null && ghostSession != null) {
-                Button(
-                    onClick = { onGhostReplay(session, ghostSession) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = highlightColor.copy(alpha = 0.15f),
-                        contentColor = highlightColor
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, highlightColor),
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(12.dp)
+            // ── Max lean ──
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp)) {
+                Text("MAX LEAN", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("GHOST REPLAY", style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold)
+                    LeanHero(maxLeft.toInt(), "LEFT", MidGrey, MutedGrey)
+                    Text("|", fontSize = 22.sp, color = Color(0xFF3A4036))
+                    LeanHero(maxRight.toInt(), "RIGHT", PureWhite, highlightColor)
+                }
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── Rider report card ──
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp)) {
+                Text("RIDER REPORT CARD", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey,
+                    modifier = Modifier.padding(bottom = 14.dp))
+                ReportBar("SMOOTHNESS", smoothness, highlightColor)
+                Spacer(Modifier.height(13.dp))
+                ReportBar("CONSISTENCY", consistency, highlightColor)
+                Spacer(Modifier.height(13.dp))
+                ReportBar("SYMMETRY", symmetry, highlightColor)
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── New personal bests ──
+            if (pbRows.isNotEmpty()) {
+                Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)) {
+                    Text("${pbRows.size} NEW PERSONAL BEST${if (pbRows.size == 1) "" else "S"}",
+                        fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey,
+                        modifier = Modifier.padding(bottom = 12.dp))
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        pbRows.forEach { row ->
+                            val delta = (row.thisLean - (row.bestLean ?: row.thisLean)).toInt()
+                            PbChip("T${row.index}", "${row.thisLean.toInt()}°", "+$delta°", highlightColor)
+                        }
+                    }
                 }
             }
 
-            // ── Action row (close + export + delete) ──
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onClose,
-                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard, contentColor = PureWhite),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-                    modifier = Modifier.weight(1f).height(46.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("CLOSE", style = MaterialTheme.typography.labelLarge)
+            // ── Action buttons ──
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { shareSessionCard(context, session, highlightColor, isMetric) },
+                        colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
+                        modifier = Modifier.weight(1f).height(52.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("SHARE SESSION", fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                    }
+                    if (onExportCsv != null && session.id != DEMO_SESSION_ID) {
+                        OutlinedButton(
+                            onClick = { onExportCsv(session) },
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.Transparent, contentColor = MutedGrey),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                            modifier = Modifier.height(52.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("CSV", fontSize = 13.sp, letterSpacing = 0.8.sp)
+                        }
+                    }
                 }
-                val context = androidx.compose.ui.platform.LocalContext.current
-                IconButton(
-                    onClick = { shareSessionCard(context, session, highlightColor, isMetric) },
-                    modifier = Modifier.size(46.dp).background(SurfaceCard, RoundedCornerShape(12.dp))
-                        .border(1.dp, BorderDivider, RoundedCornerShape(12.dp))
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = "Share", tint = MutedGrey, modifier = Modifier.size(18.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (onGhostReplay != null && ghostSession != null) {
+                        OutlinedButton(
+                            onClick = { onGhostReplay(session, ghostSession) },
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = highlightColor.copy(alpha = 0.12f), contentColor = highlightColor),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, highlightColor.copy(alpha = 0.6f)),
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("VIEW GHOST", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp)
+                        }
+                    }
+                    if (onShowCorners != null && session.corners.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = { onShowCorners(session) },
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceCard, contentColor = PureWhite),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("CORNERS · ${session.corners.size}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp)
+                        }
+                    }
                 }
                 if (onDelete != null && session.id != DEMO_SESSION_ID) {
-                    IconButton(
+                    TextButton(
                         onClick = { onDelete(session.id) },
-                        modifier = Modifier.size(46.dp).background(AlertRed.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                            .border(1.dp, AlertRed.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                        modifier = Modifier.fillMaxWidth().height(40.dp)
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = AlertRed, modifier = Modifier.size(18.dp))
+                        Text("DELETE RIDE", fontSize = 12.sp, color = AlertRed, letterSpacing = 0.8.sp)
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun TopStat(label: String, value: String, unit: String?, modifier: Modifier = Modifier, mono: Boolean = false) {
+    Column(modifier = modifier) {
+        Text(label, fontSize = 11.sp, letterSpacing = 1.6.sp, color = MutedGrey)
+        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 4.dp)) {
+            Text(value, fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = PureWhite,
+                fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default)
+            if (unit != null) {
+                Text(" $unit", fontSize = 14.sp, color = MutedGrey, modifier = Modifier.padding(bottom = 3.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeanHero(angle: Int, label: String, valueColor: Color, labelColor: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(verticalAlignment = Alignment.Top) {
+            Text("$angle", fontSize = 64.sp, fontWeight = FontWeight.SemiBold, color = valueColor,
+                letterSpacing = (-1).sp, lineHeight = 56.sp)
+            Text("°", fontSize = 26.sp, color = labelColor)
+        }
+        Text(label, fontSize = 11.sp, letterSpacing = 2.4.sp, color = labelColor,
+            modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+@Composable
+private fun ReportBar(label: String, score: Int, highlightColor: Color) {
+    val barColor = if (score >= 75) highlightColor else MidGrey
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, fontSize = 11.sp, letterSpacing = 1.sp, color = MutedGrey, modifier = Modifier.width(92.dp))
+        Box(modifier = Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(2.dp)).background(BorderDivider)) {
+            Box(modifier = Modifier.fillMaxWidth(score / 100f).fillMaxHeight().background(barColor))
+        }
+        Text("$score", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+            color = if (score >= 75) PureWhite else MidGrey,
+            modifier = Modifier.width(28.dp), textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun PbChip(corner: String, lean: String, delta: String, highlightColor: Color) {
+    Row(
+        modifier = Modifier
+            .border(androidx.compose.foundation.BorderStroke(1.dp, highlightColor.copy(alpha = 0.4f)), RoundedCornerShape(8.dp))
+            .background(highlightColor.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("$corner ", fontSize = 12.sp, color = MutedGrey, fontFamily = FontFamily.Monospace)
+        Text(lean, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = highlightColor)
+        Text(" $delta", fontSize = 11.sp, color = highlightColor.copy(alpha = 0.8f))
+    }
+}
+
+/** Smoothness 0–100 from the stability of lean angular rate (lower jerk = smoother). */
+private fun rideSmoothness(points: List<TelemetryPoint>): Int {
+    if (points.size < 2) return 50
+    val rates = ArrayList<Float>(points.size)
+    for (i in 1 until points.size) {
+        val dt = (points[i].timestamp - points[i - 1].timestamp).coerceAtLeast(1L) / 1000f
+        rates.add(abs(points[i].leanAngle - points[i - 1].leanAngle) / dt)
+    }
+    val mean = rates.average()
+    val sd = kotlin.math.sqrt(rates.map { (it - mean) * (it - mean) }.average()).toFloat()
+    return (100f / (1f + sd / 5f)).coerceIn(0f, 100f).toInt()
+}
+
+/** Consistency 0–100 from how steady speed is held (low relative variation = consistent). */
+private fun rideConsistency(points: List<TelemetryPoint>): Int {
+    val moving = points.filter { it.speedKmh > 5.0 }
+    if (moving.size < 2) return 50
+    val mean = moving.map { it.speedKmh }.average()
+    if (mean <= 0.0) return 50
+    val sd = kotlin.math.sqrt(moving.map { (it.speedKmh - mean) * (it.speedKmh - mean) }.average())
+    val cv = (sd / mean).toFloat()
+    return (100f * (1f - cv).coerceIn(0f, 1f)).toInt()
+}
+
+/** Symmetry 0–100 from how balanced left vs. right lean is. */
+private fun rideSymmetry(leftMax: Float, rightMax: Float): Int {
+    val hi = maxOf(leftMax, rightMax)
+    if (hi <= 0f) return 50
+    return (100f * minOf(leftMax, rightMax) / hi).coerceIn(0f, 100f).toInt()
 }
 
 @Composable

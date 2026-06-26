@@ -6,6 +6,7 @@ import android.location.Location
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
@@ -443,7 +444,7 @@ fun GhostReplayScreen(
     val ghoPts  = ghostSession.points
 
     var isPlaying  by remember { mutableStateOf(false) }
-    var speedMult  by remember { mutableStateOf(1f) }
+    val speedMult  by remember { mutableStateOf(1f) }
     var progressMs by remember { mutableStateOf(0L) }
 
     val curDuration = remember(curPts)  { ((curPts.lastOrNull()?.timestamp  ?: 0L) - (curPts.firstOrNull()?.timestamp  ?: 0L)).coerceAtLeast(1L) }
@@ -488,16 +489,32 @@ fun GhostReplayScreen(
 
     fun fmtTime(ms: Long) = "%02d:%02d".format(ms / 60000, (ms % 60000) / 1000)
 
-    // distance delta badge
-    val distDelta = remember(progressMs) {
-        val curDist  = curPts.filter { it.timestamp - curPts.first().timestamp <= progressMs }.sumOf { it.distanceDelta }
-        val ghoDist = ghoPts.filter { it.timestamp - ghoPts.first().timestamp <= progressMs }.sumOf { it.distanceDelta }
-        curDist - ghoDist   // positive = you are ahead (covered more distance)
+    // Cumulative distance arrays, for time-delta lookup.
+    val curCum = remember(curPts) { cumulativeDistances(curPts) }
+    val ghoCum = remember(ghoPts) { cumulativeDistances(ghoPts) }
+
+    // Time delta: at the distance you have covered, how much sooner/later the ghost reached it.
+    val curDistNow = remember(progressMs) {
+        val tEnd = (curPts.firstOrNull()?.timestamp ?: 0L) + progressMs
+        interpDistanceAt(curPts, curCum, tEnd)
+    }
+    val timeDeltaMs = remember(progressMs) {
+        progressMs - timeForDistance(ghoPts, ghoCum, curDistNow)   // negative = you are ahead
+    }
+
+    // Most recently passed corner on your run.
+    val lastCornerLabel = remember(progressMs) {
+        val start = curPts.firstOrNull()?.timestamp ?: 0L
+        val passed = currentSession.corners.withIndex().filter { (_, c) ->
+            c.maxLeanIndex in curPts.indices && curPts[c.maxLeanIndex].timestamp - start <= progressMs
+        }
+        passed.lastOrNull()?.let { "AT T${it.index + 1}" } ?: "AT START"
     }
 
     val dateLabel = remember(currentSession.startTime) {
-        java.text.SimpleDateFormat("dd MMM", java.util.Locale.getDefault()).format(java.util.Date(currentSession.startTime))
+        java.text.SimpleDateFormat("dd MMM", java.util.Locale.getDefault()).format(java.util.Date(currentSession.startTime)).uppercase()
     }
+    val totalDistKm = remember(curPts) { curPts.sumOf { it.distanceDelta } / 1000.0 }
 
     Box(modifier = Modifier.fillMaxSize().background(mapBg)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -513,11 +530,12 @@ fun GhostReplayScreen(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text("GHOST REPLAY",
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontFamily = Inter, fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontFamily = Inter, fontWeight = FontWeight.SemiBold, letterSpacing = 0.5.sp),
                         color = PureWhite)
-                    Text("$dateLabel · ${currentSession.corners.size} corners",
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani),
+                    Text("$dateLabel · ${"%.1f".format(totalDistKm)} KM · ${currentSession.corners.size} CORNERS",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, letterSpacing = 0.5.sp),
                         color = textMuted)
                 }
             }
@@ -601,13 +619,14 @@ fun GhostReplayScreen(
                     ) {
                         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
                             horizontalAlignment = Alignment.CenterHorizontally) {
-                            val sign = if (distDelta >= 0) "+" else "−"
-                            val absD = abs(distDelta)
-                            val lbl  = if (absD >= 1000) "$sign${"%.2f".format(absD / 1000)}km" else "$sign${absD.toInt()}m"
-                            Text(lbl,
-                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold),
-                                color = if (distDelta >= 0) highlightColor else AlertRed)
-                            Text("AHEAD", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp), color = textMuted)
+                            val ahead = timeDeltaMs <= 0
+                            val sign  = if (ahead) "−" else "+"
+                            val secs  = abs(timeDeltaMs) / 1000.0
+                            Text("$sign${"%.1f".format(secs)}s",
+                                style = MaterialTheme.typography.titleLarge.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold),
+                                color = if (ahead) highlightColor else AlertRed)
+                            Text(lastCornerLabel, style = MaterialTheme.typography.labelSmall.copy(
+                                letterSpacing = 1.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace), color = textMuted)
                         }
                     }
                 }
@@ -691,43 +710,32 @@ fun GhostReplayScreen(
                     Text(fmtTime(maxDuration), style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani), color = textMuted)
                 }
 
-                // Controls
-                Row(modifier = Modifier.fillMaxWidth(),
+                // Transport controls — skip back / play-pause / skip forward
+                Row(modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(36.dp, Alignment.CenterHorizontally)
                 ) {
-                    // Speed multiplier
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf(1f, 2f, 5f).forEach { mult ->
-                            OutlinedButton(
-                                onClick = { speedMult = mult },
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (speedMult == mult) highlightColor.copy(alpha = 0.18f) else Color.Transparent),
-                                border = BorderStroke(1.dp, if (speedMult == mult) highlightColor else borderCol),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                modifier = Modifier.height(30.dp)
-                            ) {
-                                Text("${mult.toInt()}×",
-                                    color = if (speedMult == mult) highlightColor else textMuted,
-                                    style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                    }
+                    Text("⟨⟨", style = MaterialTheme.typography.titleLarge, color = textMuted,
+                        modifier = Modifier.clickable { progressMs = (progressMs - 5000L).coerceAtLeast(0L) })
 
-                    // Play / Pause
                     Box(
-                        modifier = Modifier.size(44.dp).background(highlightColor, CircleShape),
+                        modifier = Modifier.size(48.dp).background(highlightColor, CircleShape)
+                            .clickable {
+                                if (progressMs >= maxDuration) progressMs = 0L
+                                isPlaying = !isPlaying
+                            },
                         contentAlignment = Alignment.Center
                     ) {
-                        IconButton(onClick = { isPlaying = !isPlaying }) {
-                            Icon(
-                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                tint = Color(0xFF070908),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
+                        Icon(
+                            if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pause" else "Play",
+                            tint = Color(0xFF070908),
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
+
+                    Text("⟩⟩", style = MaterialTheme.typography.titleLarge, color = textMuted,
+                        modifier = Modifier.clickable { progressMs = (progressMs + 5000L).coerceAtMost(maxDuration) })
                 }
             }
         }
@@ -741,6 +749,40 @@ private fun LiveStatPill(text: String, color: Color, bg: Color) {
         .padding(horizontal = 8.dp, vertical = 4.dp)) {
         Text(text, style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold), color = color)
     }
+}
+
+/** Cumulative travelled distance (metres) at every point index. */
+private fun cumulativeDistances(points: List<TelemetryPoint>): DoubleArray {
+    val out = DoubleArray(points.size)
+    var acc = 0.0
+    points.forEachIndexed { i, p -> acc += p.distanceDelta; out[i] = acc }
+    return out
+}
+
+/** Distance (metres) travelled by the given absolute timestamp, interpolated. */
+private fun interpDistanceAt(points: List<TelemetryPoint>, cum: DoubleArray, targetTs: Long): Double {
+    if (points.isEmpty()) return 0.0
+    if (targetTs <= points.first().timestamp) return 0.0
+    if (targetTs >= points.last().timestamp) return cum.last()
+    var lo = 0; var hi = points.lastIndex
+    while (lo < hi - 1) { val mid = (lo + hi) / 2; if (points[mid].timestamp <= targetTs) lo = mid else hi = mid }
+    val frac = if (points[hi].timestamp == points[lo].timestamp) 0.0
+        else (targetTs - points[lo].timestamp).toDouble() / (points[hi].timestamp - points[lo].timestamp)
+    return cum[lo] + (cum[hi] - cum[lo]) * frac
+}
+
+/** Elapsed time (ms from start) when cumulative distance first reaches [targetDist], interpolated. */
+private fun timeForDistance(points: List<TelemetryPoint>, cum: DoubleArray, targetDist: Double): Long {
+    if (points.isEmpty()) return 0L
+    val start = points.first().timestamp
+    if (targetDist <= 0.0) return 0L
+    if (targetDist >= cum.last()) return points.last().timestamp - start
+    val idx = cum.indexOfFirst { it >= targetDist }
+    if (idx <= 0) return 0L
+    val d0 = cum[idx - 1]; val d1 = cum[idx]
+    val frac = if (d1 == d0) 0.0 else (targetDist - d0) / (d1 - d0)
+    val t = points[idx - 1].timestamp + (points[idx].timestamp - points[idx - 1].timestamp) * frac
+    return (t - start).toLong()
 }
 
 private fun interpolatePosition(points: List<TelemetryPoint>, offsetMs: Long): Pair<Double, Double>? {

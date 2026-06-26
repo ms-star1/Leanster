@@ -1,4 +1,4 @@
-package com.beispiel.ridetracker
+﻿package com.beispiel.ridetracker
 
 import android.app.Activity as AndroidActivity
 import android.content.pm.ActivityInfo
@@ -7,18 +7,23 @@ import android.graphics.Typeface
 import android.view.WindowManager
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import android.content.res.Configuration
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontFamily
+import kotlinx.coroutines.launch
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Menu
@@ -33,10 +38,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
@@ -61,6 +68,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
+import java.util.Calendar
 
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
@@ -92,12 +100,11 @@ fun DashboardViewContentMock() {
     val mutedHighlightColor = MutedCyan
     val highlightColorName = "Cyan"
     val isMetric = true
-    val activeView = "lean"
     val isRecording = false
     val isPaused = false
     val startAnimTriggered = true
     val hasPlayedStartupAnimation = true
-    
+
     if (isLandscape) {
         DashboardLandscapeLayout(
             service = TelemetryService(),
@@ -109,9 +116,6 @@ fun DashboardViewContentMock() {
             onToggleUnit = {},
             onShowHistory = {},
             onShowSettings = {},
-            mapView = null,
-            activeView = activeView,
-            onActiveViewChange = {},
             isRecording = isRecording,
             isPaused = isPaused,
             startAnimTriggered = startAnimTriggered,
@@ -138,9 +142,6 @@ fun DashboardViewContentMock() {
             onToggleUnit = {},
             onShowHistory = {},
             onShowSettings = {},
-            mapView = null,
-            activeView = activeView,
-            onActiveViewChange = {},
             isRecording = isRecording,
             isPaused = isPaused,
             startAnimTriggered = startAnimTriggered,
@@ -170,7 +171,6 @@ fun DashboardView(
     onToggleUnit: () -> Unit,
     onShowHistory: () -> Unit,
     onShowSettings: () -> Unit,
-    mapView: org.maplibre.android.maps.MapView,
     hasPlayedStartupAnimation: Boolean = false,
     onResetMaxLean: () -> Unit = { service.resetMaxLean1000m() },
     onStartupAnimationFinished: () -> Unit = {}
@@ -188,9 +188,21 @@ fun DashboardView(
     val isRecording by service.isRecording.collectAsStateWithLifecycle()
     val isPaused by service.isPaused.collectAsStateWithLifecycle()
     val livePbComparison by service.livePbComparison.collectAsStateWithLifecycle()
+    val isCalibrated by service.isCalibrated.collectAsStateWithLifecycle()
 
-    var activeView by remember { mutableStateOf("lean") } // "lean" or "map"
     val context = LocalContext.current
+
+    var isCalibrationPendingReset by remember { mutableStateOf(false) }
+    val infiniteTransition = rememberInfiniteTransition(label = "flicker")
+    val flickerAlpha by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(150),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "flickerAlpha"
+    )
 
     // Startup Animation State
     var startAnimTriggered by rememberSaveable { mutableStateOf(value = false) }
@@ -220,16 +232,36 @@ fun DashboardView(
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
+    // Track calibration orientation
+    var calibratedOrientation by remember { mutableIntStateOf(configuration.orientation) }
+    LaunchedEffect(isCalibrated) {
+        if (isCalibrated) {
+            calibratedOrientation = configuration.orientation
+        }
+    }
+
+    LaunchedEffect(configuration.orientation, isCalibrated) {
+        if (isCalibrated && configuration.orientation != calibratedOrientation) {
+            isCalibrationPendingReset = true
+            delay(3000L)
+            if (configuration.orientation != calibratedOrientation) {
+                isCalibrationPendingReset = false
+                service.isCalibrated.value = false
+                android.widget.Toast.makeText(context, "Calibration reset due to rotation", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                isCalibrationPendingReset = false
+            }
+        } else {
+            isCalibrationPendingReset = false
+        }
+    }
+
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(DeepBase)
     ) {
-        // Map as Background
-        if (activeView == "map") {
-            MapContent(service, mapView)
-        }
-
         if (isLandscape) {
             DashboardLandscapeLayout(
                 service = service,
@@ -241,9 +273,6 @@ fun DashboardView(
                 onToggleUnit = onToggleUnit,
                 onShowHistory = onShowHistory,
                 onShowSettings = onShowSettings,
-                mapView = mapView,
-                activeView = activeView,
-                onActiveViewChange = { activeView = it },
                 isRecording = isRecording,
                 isPaused = isPaused,
                 startAnimTriggered = startAnimTriggered,
@@ -258,7 +287,9 @@ fun DashboardView(
                 rollingMaxRight = rollingMaxRight,
                 rollingMax1000m = rollingMax1000m,
                 rollingDistanceTarget = rollingDistanceTarget,
-                onResetMaxLean = onResetMaxLean
+                onResetMaxLean = onResetMaxLean,
+                isCalibrationPendingReset = isCalibrationPendingReset,
+                flickerAlpha = flickerAlpha
             )
         } else {
             DashboardPortraitLayout(
@@ -271,9 +302,6 @@ fun DashboardView(
                 onToggleUnit = onToggleUnit,
                 onShowHistory = onShowHistory,
                 onShowSettings = onShowSettings,
-                mapView = mapView,
-                activeView = activeView,
-                onActiveViewChange = { activeView = it },
                 isRecording = isRecording,
                 isPaused = isPaused,
                 startAnimTriggered = startAnimTriggered,
@@ -288,7 +316,9 @@ fun DashboardView(
                 rollingMaxRight = rollingMaxRight,
                 rollingMax1000m = rollingMax1000m,
                 rollingDistanceTarget = rollingDistanceTarget,
-                onResetMaxLean = onResetMaxLean
+                onResetMaxLean = onResetMaxLean,
+                isCalibrationPendingReset = isCalibrationPendingReset,
+                flickerAlpha = flickerAlpha
             )
         }
 
@@ -355,6 +385,8 @@ fun LivePbOverlay(pb: PbComparison, highlightColor: Color, onDismiss: () -> Unit
     }
 }
 
+// Removed manual orientation persistence
+
 @Composable
 fun SettingsScreen(
     service: TelemetryService,
@@ -366,440 +398,190 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    val vibrationFiltering by service.vibrationFiltering.collectAsStateWithLifecycle()
-    val forceFilter by service.forceFilterStandstill.collectAsStateWithLifecycle()
     val isDevModeActive by service.isDevModeActive.collectAsStateWithLifecycle()
+    val isUsbGpsConnected by service.isUsbGpsConnected.collectAsStateWithLifecycle()
+    val forceFilter by service.forceFilterStandstill.collectAsStateWithLifecycle()
 
     var devModeClickCount by remember { mutableIntStateOf(0) }
+    var showClearConfirm by remember { mutableStateOf(false) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DeepBase)
-            .padding(16.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Header Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+    val presets = listOf(
+        "Kawasaki" to KawasakiGreen, "Ducati" to DucatiRed, "Yamaha" to YamahaBlue,
+        "KTM" to KtmOrange, "Honda" to HondaRed, "BMW" to BmwBlue,
+        "Triumph" to TriumphGold, "Husqvarna" to HusqvarnaYellow,
+        "Cyan" to NeonCyan, "White" to PureWhiteHighlight
+    )
+
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+
+            // ── Header ────────────────────────────────────────────────────
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp).padding(bottom = 6.dp)) {
+                Text("RIDETRACKER", fontSize = 11.sp, letterSpacing = 3.sp, color = MutedGrey, fontFamily = Inter)
                 Text(
-                    text = "SETTINGS" + if (isDevModeActive) " (DEV MODE)" else "",
-                    style = MaterialTheme.typography.titleLarge.copy(fontFamily = Inter, fontWeight = FontWeight.Bold),
-                    color = highlightColor,
+                    text = "SETTINGS" + if (isDevModeActive) " (DEV)" else "",
+                    fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp,
+                    color = highlightColor, fontFamily = Rajdhani,
                     modifier = Modifier.clickable {
                         devModeClickCount++
                         if (devModeClickCount >= 5) {
                             service.isDevModeActive.value = !isDevModeActive
                             devModeClickCount = 0
-                            android.widget.Toast.makeText(
-                                context,
-                                if (isDevModeActive) "Developer Mode Activated!" else "Developer Mode Deactivated!",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
+                            android.widget.Toast.makeText(context,
+                                if (!isDevModeActive) "Dev Mode On" else "Dev Mode Off",
+                                android.widget.Toast.LENGTH_SHORT).show()
                         }
                     }
                 )
-                IconButton(onClick = onBack) {
-                    Text("✕", color = PureWhite, style = MaterialTheme.typography.titleLarge)
-                }
             }
+            HorizontalDivider(color = BorderDivider)
 
-            Spacer(modifier = Modifier.height(if (isLandscape) 12.dp else 24.dp))
-
-            val scrollState1 = rememberScrollState()
-            val scrollState2 = rememberScrollState()
-            val scrollStateSingle = rememberScrollState()
-
-            if (isLandscape) {
+            // ── BRAND PRESET ──────────────────────────────────────────────
+            Text("BRAND PRESET", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 20.dp, bottom = 14.dp))
+            presets.forEachIndexed { idx, (name, color) ->
+                val isSelected = highlightColorName == name
                 Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp)
+                    modifier = Modifier.fillMaxWidth().clickable { onColorChange(name) }
+                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Left Column: Brand + Unit System
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(scrollState1),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text("BRAND PRESET", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        BrandColorPicker(highlightColorName = highlightColorName, onColorChange = onColorChange)
-
-                        HorizontalDivider(color = BorderDivider)
-                        Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        Row(
-                            modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { if (!isMetric) onToggleUnit() }
-                                            .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = isMetric,
-                                onClick = { if (!isMetric) onToggleUnit() },
-                                colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Metric (km/h)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                        }
-                        Row(
-                            modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { if (isMetric) onToggleUnit() }
-                                            .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = !isMetric,
-                                onClick = { if (isMetric) onToggleUnit() },
-                                colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Imperial (mph)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("VIBRATION FILTERING", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            listOf("Very Low", "Low", "Standard", "High", "Very High").forEach { level ->
-                                Button(
-                                    onClick = { service.setVibrationFiltering(level) },
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(0.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (vibrationFiltering == level) highlightColor else SurfaceCard,
-                                        contentColor = if (vibrationFiltering == level) DeepCarbon else PureWhite
-                                    ),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(level, fontSize = 8.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                }
-                            }
-                        }
-                        
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("MAX LEAN DISTANCE WINDOW", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        val rollingDistanceTarget by service.rollingDistanceTarget.collectAsStateWithLifecycle()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            listOf(100, 500, 1000, 2000, 5000).forEach { dist ->
-                                Button(
-                                    onClick = { service.setRollingDistanceTarget(dist) },
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(0.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (rollingDistanceTarget == dist) highlightColor else SurfaceCard,
-                                        contentColor = if (rollingDistanceTarget == dist) DeepCarbon else PureWhite
-                                    ),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(if (dist >= 1000) "${dist / 1000}km" else "${dist}m", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                }
-                            }
-                        }
-
-                        if (isDevModeActive) {
-                            HorizontalDivider(color = BorderDivider)
-                            Text("DEVELOPER OPTIONS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { service.setForceFilterStandstill(!forceFilter) }
-                                    .padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = forceFilter,
-                                    onCheckedChange = { service.setForceFilterStandstill(it) },
-                                    colors = CheckboxDefaults.colors(checkedColor = highlightColor, uncheckedColor = MutedGrey)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Force Filter at Standstill", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                            }
-                        }
-                    }
-
-                    // Right Column: Launch Orientation & All-Time Stats
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(scrollState2),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text("LAUNCH ORIENTATION", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        val prefs = remember { androidx.preference.PreferenceManager.getDefaultSharedPreferences(context) }
-                        var defaultLaunchMode by remember { mutableStateOf(prefs.getString("default_launch_mode", "Portrait") ?: "Portrait") }
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (defaultLaunchMode != "Portrait") {
-                                        defaultLaunchMode = "Portrait"
-                                        prefs.edit { putString("default_launch_mode", "Portrait") }
-                                    }
-                                }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = defaultLaunchMode == "Portrait",
-                                onClick = {
-                                    defaultLaunchMode = "Portrait"
-                                    prefs.edit { putString("default_launch_mode", "Portrait") }
-                                },
-                                colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Portrait Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (defaultLaunchMode != "Landscape") {
-                                        defaultLaunchMode = "Landscape"
-                                        prefs.edit { putString("default_launch_mode", "Landscape") }
-                                    }
-                                }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = defaultLaunchMode == "Landscape",
-                                onClick = {
-                                    defaultLaunchMode = "Landscape"
-                                    prefs.edit { putString("default_launch_mode", "Landscape") }
-                                },
-                                colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Horizontal Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("ALL-TIME STATS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        Button(
-                            onClick = { service.resetAllTimeLean() },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed, contentColor = PureWhite),
-                            modifier = Modifier.fillMaxWidth().height(48.dp),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("RESET ALL-TIME MAX LEAN", fontWeight = FontWeight.Bold)
-                        }
-                    }
+                    Box(Modifier.size(18.dp).background(color, RoundedCornerShape(50)))
+                    Text(name, fontSize = 15.sp, modifier = Modifier.weight(1f),
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (isSelected) PureWhite else MidGrey)
+                    Text(if (isSelected) "✓" else "○", fontSize = 13.sp,
+                        color = if (isSelected) highlightColor else Color(0xFF2A3028))
                 }
-            } else {
-                // Portrait Layout (Single Column)
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .verticalScroll(scrollStateSingle),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Text("BRAND PRESET", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                    BrandColorPicker(highlightColorName = highlightColorName, onColorChange = onColorChange)
-                    HorizontalDivider(color = BorderDivider)
-                    Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { if (!isMetric) onToggleUnit() }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = isMetric,
-                            onClick = { if (!isMetric) onToggleUnit() },
-                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Metric (km/h)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { if (isMetric) onToggleUnit() }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = !isMetric,
-                            onClick = { if (isMetric) onToggleUnit() },
-                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Imperial (mph)", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("VIBRATION FILTERING", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        listOf("Very Low", "Low", "Standard", "High", "Very High").forEach { level ->
-                            Button(
-                                onClick = { service.setVibrationFiltering(level) },
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (vibrationFiltering == level) highlightColor else SurfaceCard,
-                                    contentColor = if (vibrationFiltering == level) DeepCarbon else PureWhite
-                                ),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(level, fontSize = 8.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("LAUNCH ORIENTATION", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                    val prefs = remember { androidx.preference.PreferenceManager.getDefaultSharedPreferences(context) }
-                    var defaultLaunchMode by remember { mutableStateOf(prefs.getString("default_launch_mode", "Portrait") ?: "Portrait") }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                if (defaultLaunchMode != "Portrait") {
-                                    defaultLaunchMode = "Portrait"
-                                    prefs.edit { putString("default_launch_mode", "Portrait") }
-                                }
-                            }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = defaultLaunchMode == "Portrait",
-                            onClick = {
-                                defaultLaunchMode = "Portrait"
-                                prefs.edit { putString("default_launch_mode", "Portrait") }
-                            },
-                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Portrait Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                if (defaultLaunchMode != "Landscape") {
-                                    defaultLaunchMode = "Landscape"
-                                    prefs.edit { putString("default_launch_mode", "Landscape") }
-                                }
-                            }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = defaultLaunchMode == "Landscape",
-                            onClick = {
-                                defaultLaunchMode = "Landscape"
-                                prefs.edit { putString("default_launch_mode", "Landscape") }
-                            },
-                            colors = RadioButtonDefaults.colors(selectedColor = highlightColor, unselectedColor = MutedGrey)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Horizontal Mode", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("ALL-TIME STATS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                    Button(
-                        onClick = { service.resetAllTimeLean() },
-                        colors = ButtonDefaults.buttonColors(containerColor = AlertRed, contentColor = PureWhite),
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("RESET ALL-TIME MAX LEAN", fontWeight = FontWeight.Bold)
-                    }
-
-                    if (isDevModeActive) {
-                        HorizontalDivider(color = BorderDivider)
-                        Text("DEVELOPER OPTIONS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { service.setForceFilterStandstill(!forceFilter) }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = forceFilter,
-                                onCheckedChange = { service.setForceFilterStandstill(it) },
-                                colors = CheckboxDefaults.colors(checkedColor = highlightColor, uncheckedColor = MutedGrey)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Force Filter at Standstill", color = PureWhite, style = MaterialTheme.typography.bodyLarge)
-                        }
-                    }
-                }
+                if (idx < presets.size - 1)
+                    HorizontalDivider(color = Color(0xFF111510), modifier = Modifier.padding(horizontal = 24.dp))
             }
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider(color = BorderDivider)
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = onBack,
-                colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(8.dp)
+            // ── UNITS ─────────────────────────────────────────────────────
+            Text("UNITS", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+                    .background(Color(0xFF111510), RoundedCornerShape(8.dp))
+                    .border(BorderStroke(1.dp, BorderDivider), RoundedCornerShape(8.dp))
             ) {
-                Text("SAVE & CLOSE", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Box(modifier = Modifier.weight(1f)
+                    .background(if (isMetric) highlightColor else Color.Transparent, RoundedCornerShape(8.dp))
+                    .clickable { if (!isMetric) onToggleUnit() }.padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) { Text("km/h", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp, color = if (isMetric) DeepCarbon else MutedGrey) }
+                Box(modifier = Modifier.weight(1f)
+                    .background(if (!isMetric) highlightColor else Color.Transparent, RoundedCornerShape(8.dp))
+                    .clickable { if (isMetric) onToggleUnit() }.padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) { Text("mph", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp, color = if (!isMetric) DeepCarbon else MutedGrey) }
             }
+            Spacer(Modifier.height(18.dp))
+            HorizontalDivider(color = BorderDivider)
+
+            // ── GPS SOURCE ────────────────────────────────────────────────
+            Text("GPS SOURCE", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 12.dp))
+            // Built-in GPS
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(Modifier.size(16.dp)
+                    .background(if (!isUsbGpsConnected) highlightColor else Color.Transparent, RoundedCornerShape(50))
+                    .border(BorderStroke(if (!isUsbGpsConnected) 0.dp else 1.5.dp, Color(0xFF3A4036)), RoundedCornerShape(50)))
+                Text("Built-in GPS", fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                    color = if (!isUsbGpsConnected) PureWhite else MidGrey, modifier = Modifier.weight(1f))
+                Text("~1Hz", fontSize = 12.sp, color = MutedGrey, fontFamily = FontFamily.Monospace)
+            }
+            HorizontalDivider(color = Color(0xFF111510), modifier = Modifier.padding(horizontal = 24.dp))
+            // Adafruit USB GPS
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(Modifier.size(16.dp)
+                    .background(if (isUsbGpsConnected) highlightColor else Color.Transparent, RoundedCornerShape(50))
+                    .border(BorderStroke(if (isUsbGpsConnected) 0.dp else 1.5.dp, Color(0xFF3A4036)), RoundedCornerShape(50)))
+                Text("Adafruit USB GPS", fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                    color = if (isUsbGpsConnected) PureWhite else MidGrey, modifier = Modifier.weight(1f))
+                Text("10Hz", fontSize = 12.sp,
+                    color = if (isUsbGpsConnected) highlightColor else MutedGrey, fontFamily = FontFamily.Monospace)
+            }
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider(color = BorderDivider)
+
+            // ── DATA ──────────────────────────────────────────────────────
+            Text("DATA", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 12.dp))
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 13.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Export all sessions as CSV", fontSize = 14.sp, color = PureWhite, modifier = Modifier.weight(1f))
+                Text("›", fontSize = 18.sp, color = MutedGrey)
+            }
+            HorizontalDivider(color = Color(0xFF111510), modifier = Modifier.padding(horizontal = 24.dp))
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 13.dp)
+                .clickable { showClearConfirm = true },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Clear all data", fontSize = 14.sp, color = MutedGrey, modifier = Modifier.weight(1f))
+                Text("›", fontSize = 18.sp, color = MutedGrey)
+            }
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider(color = BorderDivider)
+
+            // ── DEVELOPER (hidden) ────────────────────────────────────────
+            if (isDevModeActive) {
+                Text("DEVELOPER", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                    modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 4.dp))
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)
+                    .clickable { service.setForceFilterStandstill(!forceFilter) }.padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = forceFilter, onCheckedChange = { service.setForceFilterStandstill(it) },
+                        colors = CheckboxDefaults.colors(checkedColor = highlightColor, uncheckedColor = MutedGrey))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Force Filter at Standstill", color = PureWhite)
+                }
+                HorizontalDivider(color = BorderDivider)
+            }
+
+            // Space for footer
+            Spacer(Modifier.height(80.dp))
         }
+
+        // ── Footer (pinned) ───────────────────────────────────────────────
+        Row(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)
+            .padding(horizontal = 24.dp, vertical = 24.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("RideTracker 1.0.0", fontSize = 11.sp, letterSpacing = 1.sp,
+                color = Color(0xFF2A3028), fontFamily = FontFamily.Monospace)
+            Text("Offline · No account", fontSize = 11.sp, letterSpacing = 1.sp,
+                color = Color(0xFF2A3028), fontFamily = FontFamily.Monospace)
+        }
+
+        // ── Overlays ─────────────────────────────────────────────────────
+        if (showClearConfirm) {
+            AlertDialog(
+                onDismissRequest = { showClearConfirm = false },
+                containerColor = SurfaceCard, titleContentColor = PureWhite, textContentColor = MutedGrey,
+                title = { Text("Clear All Data?") },
+                text = { Text("Resets all-time max lean records. Session ride files are not deleted.") },
+                confirmButton = { TextButton(onClick = { service.resetAllTimeLean(); showClearConfirm = false }) {
+                    Text("CLEAR", color = AlertRed, fontWeight = FontWeight.Bold) }
+                },
+                dismissButton = { TextButton(onClick = { showClearConfirm = false }) {
+                    Text("CANCEL", color = PureWhite) }
+                }
+            )
+        }
+
     }
 }
 
-@Composable
-private fun BrandColorPicker(highlightColorName: String, onColorChange: (String) -> Unit) {
-    val presets = listOf(
-        "Cyan"           to NeonCyan,
-        "Kawasaki Green" to KawasakiGreen,
-        "Ducati Red"     to DucatiRed,
-        "Yamaha Blue"    to YamahaBlue,
-        "Pure White"     to PureWhiteHighlight
-    )
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        presets.forEach { (name, color) ->
-            val selected = highlightColorName == name
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(
-                        if (selected) color else color.copy(alpha = 0.35f),
-                        androidx.compose.foundation.shape.CircleShape
-                    )
-                    .border(
-                        width = if (selected) 2.dp else 1.dp,
-                        color = if (selected) color else color.copy(alpha = 0.4f),
-                        shape = androidx.compose.foundation.shape.CircleShape
-                    )
-                    .clickable { onColorChange(name) },
-                contentAlignment = Alignment.Center
-            ) {
-                if (selected) {
-                    Box(modifier = Modifier.size(14.dp).background(DeepCarbon, androidx.compose.foundation.shape.CircleShape))
-                }
-            }
-        }
-    }
-}
 
 enum class MetricType(val title: String) {
     LEAN("Lean"),
@@ -825,22 +607,6 @@ fun TopRightControls(
     var menuExpanded by remember { mutableStateOf(false) }
 
     Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = {
-            val activity = context as? AndroidActivity
-            val newOrientation = if (activity?.requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) {
-                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            } else {
-                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            }
-            activity?.requestedOrientation = newOrientation
-        }) {
-            Icon(
-                imageVector = Icons.Default.ScreenRotation,
-                contentDescription = "Rotate Screen",
-                tint = highlightColor
-            )
-        }
-        
         Box {
             IconButton(onClick = { menuExpanded = true }) {
                 Icon(
@@ -1017,11 +783,11 @@ fun CustomizableMetricCard(
                 )
             }
             if (onReset != null) {
-                androidx.compose.material3.Divider(color = BorderDivider)
+                HorizontalDivider(color = BorderDivider)
                 DropdownMenuItem(
                     text = { Text("Reset Value", color = AlertRed) },
                     onClick = {
-                        onReset!!()
+                        onReset()
                         expanded = false
                     }
                 )
@@ -1030,6 +796,485 @@ fun CustomizableMetricCard(
     }
 }
 
+// ── Calibration Alert Overlay ─────────────────────────────────────────────────
+@Composable
+fun CalibrationAlertOverlay(
+    reason: String,
+    highlightColor: Color,
+    onOk: () -> Unit,
+    onRecalibrate: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xF0070908))
+            .clickable(enabled = false) {},
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.88f)
+                .background(Color(0xFF1A0A0A), RoundedCornerShape(18.dp))
+                .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.5f)), RoundedCornerShape(18.dp))
+                .padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Pulsing warning icon
+            val infiniteTransition = rememberInfiniteTransition(label = "alertPulse")
+            val pulseAlpha by infiniteTransition.animateFloat(
+                initialValue = 1f, targetValue = 0.3f,
+                animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+                label = "alertAlpha"
+            )
+            Text("⚠", fontSize = 40.sp, color = AlertRed.copy(alpha = pulseAlpha))
+            Text(
+                "CALIBRATION LOST",
+                fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AlertRed,
+                letterSpacing = 2.sp, fontFamily = Inter
+            )
+            Text(
+                reason,
+                fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp
+            )
+            HorizontalDivider(color = Color(0xFF2A1010))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onOk,
+                    modifier = Modifier.weight(1f).height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, BorderDivider),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PureWhite)
+                ) {
+                    Text("OK", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+                }
+                Button(
+                    onClick = onRecalibrate,
+                    modifier = Modifier.weight(1f).height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AlertRed)
+                ) {
+                    Text("RECALIBRATE", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp, color = PureWhite)
+                }
+            }
+        }
+    }
+}
+
+// ── Calibration Guide Overlay ─────────────────────────────────────────────────
+@Composable
+fun CalibrationGuideOverlay(
+    service: TelemetryService,
+    highlightColor: Color,
+    onDismiss: () -> Unit
+) {
+    val currentLean by service.currentLean.collectAsStateWithLifecycle()
+    val currentPitch by service.currentPitch.collectAsStateWithLifecycle()
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val scope = rememberCoroutineScope()
+
+    // 0=mount, 1=upright, 2=calibrate, 3=success, 4=fail
+    var step by remember { mutableIntStateOf(0) }
+    var mountMode by remember { mutableStateOf("") }      // "Landscape" or "Portrait"
+    var failReason by remember { mutableStateOf("") }
+    var countdown by remember { mutableIntStateOf(3) }
+    var isCountingDown by remember { mutableStateOf(false) }
+    var countdownMessage by remember { mutableStateOf("") }
+
+    // Swipe drag state for step 0
+    var swipeDrag by remember { mutableFloatStateOf(0f) }
+    val swipeThreshold = 180f
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xE5070908))
+            .clickable(enabled = false) {},
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.88f)
+                .background(Color(0xFF131813), RoundedCornerShape(18.dp))
+                .border(BorderStroke(1.dp, BorderDivider), RoundedCornerShape(18.dp))
+                .padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            when (step) {
+
+                // ── Step 1: Mount device ──────────────────────────────────
+                0 -> {
+                    Text("STEP 1 / 3", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey)
+                    Text("Mount Your Device", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, textAlign = TextAlign.Center)
+                    Text(
+                        "Attach your phone to the motorcycle mount securely.\nThen swipe right to confirm.",
+                        fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp
+                    )
+
+                    // Swipe-right card
+                    val swipeProgress = (swipeDrag / swipeThreshold).coerceIn(0f, 1f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .background(Color(0xFF0E130D), RoundedCornerShape(12.dp))
+                            .border(BorderStroke(1.dp, if (swipeProgress > 0.5f) highlightColor.copy(0.6f) else BorderDivider), RoundedCornerShape(12.dp))
+                            .pointerInput(Unit) {
+                                detectHorizontalDragGestures(
+                                    onDragEnd = {
+                                        if (swipeDrag >= swipeThreshold) {
+                                            // Check mount stability
+                                            val leanAtStart = currentLean
+                                            val pitchAtStart = currentPitch
+                                            scope.launch {
+                                                delay(1500L)
+                                                val leanDelta = abs(currentLean - leanAtStart)
+                                                val pitchDelta = abs(currentPitch - pitchAtStart)
+                                                if (leanDelta > 6f || pitchDelta > 6f) {
+                                                    failReason = "Phone detected as moving.\nEnsure device is firmly mounted and try again."
+                                                    step = 4
+                                                } else {
+                                                    mountMode = if (isLandscape) "Landscape" else "Portrait"
+                                                    step = 1
+                                                }
+                                            }
+                                        } else {
+                                            swipeDrag = 0f
+                                        }
+                                    },
+                                    onDragCancel = { swipeDrag = 0f },
+                                    onHorizontalDrag = { _, dragAmount ->
+                                        swipeDrag = (swipeDrag + dragAmount).coerceAtLeast(0f)
+                                    }
+                                )
+                            },
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(swipeProgress)
+                                .background(highlightColor.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (swipeProgress > 0.8f) "Release to confirm" else "→  Swipe right to confirm",
+                                fontSize = 13.sp,
+                                color = if (swipeProgress > 0.5f) highlightColor else MutedGrey,
+                                fontFamily = FontFamily.SansSerif
+                            )
+                            Text("→", fontSize = 18.sp, color = if (swipeProgress > 0.5f) highlightColor else MidGrey)
+                        }
+                    }
+
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel", color = MutedGrey, fontSize = 13.sp)
+                    }
+                }
+
+                // ── Step 2: Upright + mount confirmation ──────────────────
+                1 -> {
+                    Text("STEP 2 / 3", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(highlightColor.copy(0.08f), RoundedCornerShape(10.dp))
+                            .padding(14.dp)
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Canvas(Modifier.size(8.dp)) { drawCircle(highlightColor) }
+                            Text("Mounted in $mountMode mode — confirmed", fontSize = 13.sp, color = highlightColor, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                    Text("Straighten your Bike", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, textAlign = TextAlign.Center)
+                    Text(
+                        "Place your bike in a fully upright position.\nBest done on a level surface.",
+                        fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp
+                    )
+                    Button(
+                        onClick = { step = 2 },
+                        colors = ButtonDefaults.buttonColors(containerColor = highlightColor),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                    ) {
+                        Text("NEXT →", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF070908), letterSpacing = 1.sp)
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel", color = MutedGrey, fontSize = 13.sp)
+                    }
+                }
+
+                // ── Step 3: Calibrate ─────────────────────────────────────
+                2 -> {
+                    Text("STEP 3 / 3", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey)
+                    Text("3D Calibrate Now", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, textAlign = TextAlign.Center)
+
+                    if (isCountingDown) {
+                        // Countdown display
+                        Text(
+                            text = if (countdown > 0) countdown.toString() else "✓",
+                            fontSize = 64.sp, fontWeight = FontWeight.Bold,
+                            color = if (countdown > 0) highlightColor else Color(0xFF6FD000),
+                            fontFamily = FontFamily.SansSerif
+                        )
+                        Text(
+                            countdownMessage,
+                            fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center
+                        )
+                    } else {
+                        Text(
+                            "Keep your bike perfectly upright and steady.\nTap below to begin the 3-second calibration.",
+                            fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp
+                        )
+                        Button(
+                            onClick = {
+                                isCountingDown = true
+                                countdownMessage = "Keep your bike upright and steady"
+                                val leanAtStart = currentLean
+                                val pitchAtStart = currentPitch
+                                scope.launch {
+                                    for (i in 3 downTo 1) {
+                                        countdown = i
+                                        val leanNow = currentLean
+                                        val pitchNow = currentPitch
+                                        if (abs(leanNow - leanAtStart) > 3f || abs(pitchNow - pitchAtStart) > 3f) {
+                                            countdownMessage = "Keep your bike steady!"
+                                            delay(600L)
+                                            failReason = "Erratic movement detected during calibration.\nKeep your bike steady and try again."
+                                            isCountingDown = false
+                                            step = 4
+                                            return@launch
+                                        }
+                                        delay(1000L)
+                                    }
+                                    countdown = 0
+                                    service.calibrateSensors()
+                                    delay(200L) // let sensor callback fire
+                                    step = 3
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = highlightColor),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Text("3D CALIBRATE NOW", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF070908), letterSpacing = 1.sp)
+                        }
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel", color = MutedGrey, fontSize = 13.sp)
+                    }
+                }
+
+                // ── Step 4: Success ───────────────────────────────────────
+                3 -> {
+                    Canvas(Modifier.size(56.dp)) {
+                        drawCircle(Color(0xFF6FD000).copy(0.15f))
+                        drawCircle(Color(0xFF6FD000), style = Stroke(2.dp.toPx()))
+                    }
+                    Text("✓", fontSize = 32.sp, color = Color(0xFF6FD000), modifier = Modifier.offset(y = (-56).dp).padding(0.dp))
+                    Text("Calibration Locked", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, textAlign = TextAlign.Center)
+                    Text(
+                        "Sensor calibrated in $mountMode mode.\nYou're ready to ride.",
+                        fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp
+                    )
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6FD000)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                    ) {
+                        Text("DONE", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF070908), letterSpacing = 1.sp)
+                    }
+                }
+
+                // ── Step 5: Fail ──────────────────────────────────────────
+                4 -> {
+                    Text("✕", fontSize = 32.sp, color = AlertRed)
+                    Text("Calibration Failed", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, textAlign = TextAlign.Center)
+                    Text(failReason, fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp)
+                    Button(
+                        onClick = { step = 0; swipeDrag = 0f; countdown = 3; isCountingDown = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = BorderDivider),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                    ) {
+                        Text("TRY AGAIN", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, letterSpacing = 1.sp)
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel", color = MutedGrey, fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── New Design: Dashboard Dial ────────────────────────────────────────────────
+@Composable
+private fun DashboardDial(lean: Float, highlightColor: Color, modifier: Modifier = Modifier) {
+    val animatedLean by animateFloatAsState(
+        targetValue = lean,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioNoBouncy),
+        label = "leanDial"
+    )
+
+    BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.Center) {
+        val dialSize = minOf(constraints.maxWidth, constraints.maxHeight).toFloat()
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val r = minOf(size.width, size.height) * 0.44f
+            val leanRad = Math.toRadians(animatedLean.toDouble())
+
+            // Outer circle
+            drawCircle(Color(0xFF1D211B), radius = r, center = Offset(cx, cy), style = Stroke(1.5.dp.toPx()))
+
+            // Tick marks: ±15, ±30, ±45 degrees from top (clockwise = right)
+            val ticks = listOf(-45f, -30f, -15f, 0f, 15f, 30f, 45f)
+            ticks.forEach { t ->
+                val isGreen = abs(t) >= 45f
+                val isCenter = t == 0f
+                val tickLen = if (isGreen || isCenter) 16.dp.toPx() else 10.dp.toPx()
+                val strokeW = if (isGreen) 2.5.dp.toPx() else 2f.dp.toPx()
+                val tRad = Math.toRadians(t.toDouble())
+                val ox = cx + r * sin(tRad).toFloat()
+                val oy = cy - r * cos(tRad).toFloat()
+                val ix = cx + (r - tickLen) * sin(tRad).toFloat()
+                val iy = cy - (r - tickLen) * cos(tRad).toFloat()
+                val col = when {
+                    isGreen -> highlightColor
+                    isCenter -> Color(0xFF2A3028)
+                    else -> Color(0xFF3A4036)
+                }
+                drawLine(col, Offset(ix, iy), Offset(ox, oy), strokeW)
+            }
+
+            // Horizon line (endpoints exactly on circle boundary)
+            val hx = r * cos(leanRad).toFloat()
+            val hy = r * sin(leanRad).toFloat()
+            drawLine(highlightColor, Offset(cx - hx, cy - hy), Offset(cx + hx, cy + hy), 2.2.dp.toPx())
+
+            // Dot at current lean position on circle edge
+            val dotX = cx + r * sin(leanRad).toFloat()
+            val dotY = cy - r * cos(leanRad).toFloat()
+            drawCircle(highlightColor, radius = 5.5.dp.toPx(), center = Offset(dotX, dotY))
+
+            // Degree labels outside circle
+            val labelColor45 = android.graphics.Color.argb(255, 74, 96, 64)
+            val labelColor = android.graphics.Color.argb(255, 58, 64, 54)
+            drawIntoCanvas { canvas ->
+                val paint = android.graphics.Paint().apply {
+                    textSize = 11.sp.toPx()
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    typeface = android.graphics.Typeface.DEFAULT
+                    isAntiAlias = true
+                }
+                listOf(-45f to "45", -30f to "30", -15f to "15", 15f to "15", 30f to "30", 45f to "45").forEach { (angle, label) ->
+                    val aRad = Math.toRadians(angle.toDouble())
+                    val lr = r + 18.dp.toPx()
+                    val lx = (cx + lr * sin(aRad)).toFloat()
+                    val ly = (cy - lr * cos(aRad)).toFloat() + 4.dp.toPx()
+                    paint.color = if (abs(angle) >= 45f) labelColor45 else labelColor
+                    canvas.nativeCanvas.drawText(label, lx, ly, paint)
+                }
+            }
+        }
+
+        // Center text overlay
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.offset(y = (-8).dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Text(
+                    text = abs(lean).toInt().toString(),
+                    fontSize = 96.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PureWhite,
+                    fontFamily = Rajdhani,
+                    lineHeight = 80.sp,
+                    letterSpacing = (-2).sp
+                )
+                Text(
+                    text = "°",
+                    fontSize = 38.sp,
+                    color = highlightColor,
+                    fontFamily = Rajdhani,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = if (abs(lean) > 1f) (if (lean > 0f) "RIGHT" else "LEFT") else "UPRIGHT",
+                fontSize = 11.sp,
+                letterSpacing = 3.6.sp,
+                color = highlightColor,
+                fontFamily = Inter
+            )
+        }
+    }
+}
+
+// ── Bottom Navigation Bar ─────────────────────────────────────────────────────
+@Composable
+private fun DashboardBottomNav(
+    activeTab: String,
+    highlightColor: Color,
+    onDial: () -> Unit,
+    onSessions: () -> Unit,
+    onSettings: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(DeepCarbon)
+            .padding(horizontal = 30.dp, vertical = 10.dp)
+            .padding(bottom = 6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BottomNavItem("DIAL", activeTab == "dial", highlightColor, onDial)
+            BottomNavItem("SESSIONS", activeTab == "sessions", highlightColor, onSessions)
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onSettings)) {
+                Text(
+                    text = "⚙",
+                    fontSize = 18.sp,
+                    color = if (activeTab == "settings") highlightColor else MutedGrey
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomNavItem(label: String, isActive: Boolean, highlightColor: Color, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick)) {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            letterSpacing = 1.2.sp,
+            color = if (isActive) highlightColor else MutedGrey,
+            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+            fontFamily = Inter
+        )
+        if (isActive) {
+            Spacer(Modifier.height(3.dp))
+            Box(Modifier.width(20.dp).height(1.5.dp).background(highlightColor, RoundedCornerShape(1.dp)))
+        }
+    }
+}
+
+// ── Dashboard Portrait Layout (Design v3) ─────────────────────────────────────
 @Suppress("UNUSED_PARAMETER")
 @Composable
 fun DashboardPortraitLayout(
@@ -1042,9 +1287,6 @@ fun DashboardPortraitLayout(
     onToggleUnit: () -> Unit,
     onShowHistory: () -> Unit,
     onShowSettings: () -> Unit,
-    mapView: org.maplibre.android.maps.MapView?,
-    activeView: String,
-    onActiveViewChange: (String) -> Unit,
     isRecording: Boolean,
     isPaused: Boolean,
     startAnimTriggered: Boolean,
@@ -1059,161 +1301,316 @@ fun DashboardPortraitLayout(
     rollingMaxRight: Float,
     rollingMax1000m: Float,
     rollingDistanceTarget: Int,
-    onResetMaxLean: () -> Unit = {}
+    onResetMaxLean: () -> Unit = {},
+    isCalibrationPendingReset: Boolean = false,
+    flickerAlpha: Float = 1f
 ) {
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
+    val currentLocation by service.currentLocation.collectAsStateWithLifecycle()
+    val pastSessions by service.pastSessions.collectAsStateWithLifecycle()
 
-    var box1Metric by rememberSaveable { mutableStateOf(MetricType.LEAN) }
-    var box2Metric by rememberSaveable { mutableStateOf(MetricType.MAX_1000M) }
-    var box3Metric by rememberSaveable { mutableStateOf(MetricType.SPEED) }
-    var box4Metric by rememberSaveable { mutableStateOf(MetricType.CORNERS) }
-    var box5Metric by rememberSaveable { mutableStateOf(MetricType.ALL_TIME_MAX) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "RideTracker",
-                style = MaterialTheme.typography.titleLarge.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold),
-                color = PureWhite
-            )
-            TopRightControls(
-                onShowSettings = onShowSettings,
-                onShowHistory = onShowHistory,
-                onCalibrate = { service.calibrateSensors() },
-                highlightColor = highlightColor
-            )
+    // Session timer
+    var elapsedSecs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(isRecording) { if (!isRecording) elapsedSecs = 0L }
+    LaunchedEffect(isRecording, isPaused) {
+        if (isRecording && !isPaused) {
+            while (true) { delay(1000L); if (isRecording && !isPaused) elapsedSecs++ }
         }
+    }
+    val timerText = remember(elapsedSecs) {
+        val h = elapsedSecs / 3600; val m = (elapsedSecs % 3600) / 60; val s = elapsedSecs % 60
+        if (h > 0) "%02d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+    }
 
-        // Unified Telemetry Top Row (2 Customizable Boxes)
-        Row(
-            modifier = Modifier.fillMaxWidth().height(90.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            StartupAnimatedElement(order = 0, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1.0f).fillMaxHeight()) {
-                CustomizableMetricCard(
-                    selectedMetric = box1Metric,
-                    onMetricSelected = { box1Metric = it },
-                    currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                    rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                    sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                    sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                    highlightColor = highlightColor, modifier = Modifier.fillMaxHeight(),
-                    onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                    onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
-                )
-            }
-
-            StartupAnimatedElement(order = 1, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.weight(1.0f).fillMaxHeight()) {
-                CustomizableMetricCard(
-                    selectedMetric = box2Metric,
-                    onMetricSelected = { box2Metric = it },
-                    currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                    rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                    sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                    sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                    highlightColor = highlightColor, modifier = Modifier.fillMaxHeight(),
-                    onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                    onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
-                )
-            }
+    // Clock
+    var clockText by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val c = Calendar.getInstance()
+            clockText = "%02d:%02d".format(c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+            delay(30_000L)
         }
+    }
+    if (clockText.isEmpty()) {
+        val c = Calendar.getInstance()
+        clockText = "%02d:%02d".format(c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+    }
 
-        Spacer(modifier = Modifier.height(12.dp))
+    val isCalibrated by service.isCalibrated.collectAsStateWithLifecycle()
+    val gpsAccuracy = currentLocation?.accuracy ?: Float.MAX_VALUE
+    val gpsActive = currentLocation != null
 
-        // Main Display (Horizon or Map Spacer)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) {
-            if (activeView == "lean") {
-                StartupAnimatedElement(order = 4, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation, modifier = Modifier.fillMaxSize()) {
-                    LeanHorizonIndicator(
-                        lean = currentLean,
-                        speed = currentSpeed,
-                        highlightColor = highlightColor,
-                        modifier = Modifier.fillMaxSize(),
-                        sizeScale = 1.3f,
-                        yOffsetPercent = 0.10f
-                    )
-                }
-            }
+    // Reverse-geocode current location to city name
+    val geocoderContext = LocalContext.current
+    var cityName by remember { mutableStateOf("") }
+    LaunchedEffect(currentLocation) {
+        val loc = currentLocation ?: return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val geocoder = android.location.Geocoder(geocoderContext, java.util.Locale.getDefault())
+                val results: List<android.location.Address>? =
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        kotlin.coroutines.suspendCoroutine { cont: kotlin.coroutines.Continuation<List<android.location.Address>> ->
+                            geocoder.getFromLocation(loc.latitude, loc.longitude, 1,
+                                object : android.location.Geocoder.GeocodeListener {
+                                    override fun onGeocode(addresses: List<android.location.Address>) {
+                                        cont.resumeWith(Result.success(addresses))
+                                    }
+                                    override fun onError(errorMessage: String?) {
+                                        cont.resumeWith(Result.success(emptyList()))
+                                    }
+                                })
+                        }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
+                    }
+                val addr = results?.firstOrNull()
+                val city = addr?.locality ?: addr?.subAdminArea ?: addr?.adminArea ?: ""
+                if (city.isNotEmpty()) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { cityName = city }
+            } catch (_: Exception) {}
         }
+    }
 
-        if (activeView == "lean") {
-            Spacer(modifier = Modifier.height(12.dp))
+    val absMaxLeft = abs(sessionMaxLeft)
+    val absMaxRight = sessionMaxRight
+    val maxForBar = maxOf(absMaxLeft, absMaxRight, 1f)
+    val sessMax = maxOf(abs(sessionMaxLeft), sessionMaxRight)
+    val allTimeBest = maxOf(abs(allTimeMaxLeft), allTimeMaxRight)
 
-            StartupAnimatedElement(order = 5, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation) {
+    // Pulsing dot animation
+    val infiniteTransition = rememberInfiniteTransition(label = "recPulse")
+    val recAlpha by infiniteTransition.animateFloat(
+        initialValue = 1f, targetValue = 0.12f,
+        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+        label = "recAlpha"
+    )
+
+    val context = LocalContext.current
+    val activity = context as? AndroidActivity
+    var showStopDialog by remember { mutableStateOf(false) }
+    var showCalibrationGuide by remember { mutableStateOf(false) }
+    if (showStopDialog) {
+        AlertDialog(
+            onDismissRequest = { showStopDialog = false },
+            containerColor = SurfaceCard, titleContentColor = PureWhite, textContentColor = MutedGrey,
+            title = { Text("Stop Session?") },
+            text = { Text("End and save your ride.") },
+            confirmButton = { TextButton(onClick = { showStopDialog = false; service.stopRecording() }) { Text("STOP", color = AlertRed, fontWeight = FontWeight.Bold) } },
+            dismissButton = { TextButton(onClick = { showStopDialog = false }) { Text("CANCEL", color = PureWhite) } }
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+
+        Column(modifier = Modifier.fillMaxSize()) {
+
+                // ── Status Bar ────────────────────────────────────────────
                 Row(
-                    modifier = Modifier.fillMaxWidth().height(80.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically
                 ) {
-                    CustomizableMetricCard(
-                        selectedMetric = box3Metric,
-                        onMetricSelected = { box3Metric = it },
-                        currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                        rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                        sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                        sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                        highlightColor = highlightColor, modifier = Modifier.weight(1f).fillMaxHeight(),
-                        forceWhiteText = true,
-                        onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                        onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Canvas(Modifier.size(8.dp)) { drawCircle(if (gpsActive) highlightColor else MutedGrey) }
+                        Text(
+                            text = if (gpsActive) "GPS 10Hz" else "GPS –",
+                            fontSize = 12.sp, color = MutedGrey, fontFamily = Inter
+                        )
+                    }
+                }
 
-                    CustomizableMetricCard(
-                        selectedMetric = box4Metric,
-                        onMetricSelected = { box4Metric = it },
-                        currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                        rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                        sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                        sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                        highlightColor = highlightColor, modifier = Modifier.weight(1f).fillMaxHeight(),
-                        forceWhiteText = true,
-                        onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                        onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
-                    )
+                // ── Recording Row ─────────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier
+                            .background(if (!isRecording) highlightColor.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(8.dp))
+                            .border(if (!isRecording) BorderStroke(1.dp, highlightColor) else BorderStroke(0.dp, Color.Transparent), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .clickable {
+                                when {
+                                    !isCalibrated && !isRecording -> {
+                                        showCalibrationGuide = true
+                                    }
+                                    !isRecording || isPaused -> service.startRecording()
+                                }
+                            }
+                    ) {
+                        Canvas(Modifier.size(8.dp)) {
+                            drawCircle(if (isRecording && !isPaused) highlightColor.copy(alpha = recAlpha) else if (isRecording) highlightColor.copy(alpha = 0.4f) else highlightColor)
+                        }
+                        Text(
+                            text = if (isRecording) timerText else "TAP TO START",
+                            fontSize = 15.sp,
+                            color = if (isRecording) MidGrey else highlightColor,
+                            fontFamily = Rajdhani, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (cityName.isNotEmpty()) {
+                            Text(cityName, fontSize = 12.sp, color = MutedGrey, letterSpacing = 0.5.sp, fontFamily = Inter)
+                        }
+                        if (isRecording) {
+                            Box(
+                                modifier = Modifier.clickable {
+                                    android.widget.Toast.makeText(activity, "Screen rotation is locked while a session is recording.", android.widget.Toast.LENGTH_SHORT).show()
+                                },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ScreenRotation,
+                                    contentDescription = "Rotation Locked",
+                                    tint = Color(0xFF3A4036),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Canvas(Modifier.size(16.dp)) {
+                                    drawLine(Color(0xFF3A4036), Offset(0f, size.height), Offset(size.width, 0f), strokeWidth = 2.dp.toPx())
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier.size(28.dp)
+                                    .background(AlertRed.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                                    .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.5f)), RoundedCornerShape(4.dp))
+                                    .clickable { showStopDialog = true },
+                                contentAlignment = Alignment.Center
+                            ) { Text("■", fontSize = 10.sp, color = AlertRed) }
+                        }
+                    }
+                }
 
-                    CustomizableMetricCard(
-                        selectedMetric = box5Metric,
-                        onMetricSelected = { box5Metric = it },
-                        currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                        rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                        sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                        sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                        highlightColor = highlightColor, modifier = Modifier.weight(1f).fillMaxHeight(),
-                        forceWhiteText = true,
-                        onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                        onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
+                // ── Main Dial ─────────────────────────────────────────────
+                Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    DashboardDial(lean = currentLean, highlightColor = highlightColor, modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp))
+                }
+
+                // ── Subtitle ──────────────────────────────────────────────
+                val accuracyLabel = if (gpsAccuracy < 30f) "GPS Accuracy ±${gpsAccuracy.toInt()}m" else "GPS No fix"
+                if (isCalibrated) {
+                    Text(
+                        text = "CALIBRATION LOCKED",
+                        fontSize = 11.sp, letterSpacing = 2.sp,
+                        color = MidGrey.copy(alpha = if (isCalibrationPendingReset) flickerAlpha else 1f),
+                        fontFamily = Inter,
+                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp)
+                    )
+                    Text(
+                        text = accuracyLabel,
+                        fontSize = 10.sp, letterSpacing = 1.2.sp,
+                        color = MutedGrey,
+                        fontFamily = Inter,
+                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 2.dp)
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "NOT CALIBRATED",
+                            fontSize = 11.sp, letterSpacing = 2.sp,
+                            color = AlertRed, fontFamily = Inter
+                        )
+                        Text(
+                            text = "CALIBRATE ›",
+                            fontSize = 10.sp, letterSpacing = 1.5.sp,
+                            color = AlertRed.copy(alpha = 0.8f), fontFamily = Inter,
+                            modifier = Modifier
+                                .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.35f)), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                                .clickable { showCalibrationGuide = true }
+                        )
+                    }
+                }
+
+                // ── Speed ─────────────────────────────────────────────────
+                Row(
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 16.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Text(
+                        text = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
+                        fontSize = 52.sp, fontWeight = FontWeight.SemiBold, color = PureWhite,
+                        fontFamily = Rajdhani, letterSpacing = (-1).sp
+                    )
+                    Text(
+                        text = " ${if (isMetric) "KM/H" else "MPH"}",
+                        fontSize = 14.sp, color = MutedGrey, letterSpacing = 1.sp, fontFamily = Inter,
+                        modifier = Modifier.padding(bottom = 8.dp, start = 5.dp)
                     )
                 }
+
+                // ── Stats Row ─────────────────────────────────────────────
+                Box(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    HorizontalDivider(color = BorderDivider, modifier = Modifier.align(Alignment.TopCenter))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.weight(1f).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(corners.size.toString(), fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Rajdhani)
+                            Text("CORNERS", fontSize = 10.sp, letterSpacing = 1.6.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.padding(top = 3.dp))
+                        }
+                        Box(modifier = Modifier.width(1.dp).height(50.dp).background(BorderDivider).align(Alignment.CenterVertically))
+                        Column(modifier = Modifier.weight(1f).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                Text(sessMax.toInt().toString(), fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Rajdhani)
+                                Text("°", fontSize = 14.sp, color = highlightColor, fontFamily = Rajdhani)
+                            }
+                            Text("SESS MAX", fontSize = 10.sp, letterSpacing = 1.6.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.padding(top = 3.dp))
+                        }
+                        Box(modifier = Modifier.width(1.dp).height(50.dp).background(BorderDivider).align(Alignment.CenterVertically))
+                        Column(modifier = Modifier.weight(1f).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                Text(allTimeBest.toInt().toString(), fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = highlightColor, fontFamily = Rajdhani)
+                                Text("°", fontSize = 14.sp, color = MutedGrey, fontFamily = Rajdhani)
+                            }
+                            Text("ALL-TIME", fontSize = 10.sp, letterSpacing = 1.6.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.padding(top = 3.dp))
+                        }
+                    }
+                }
+
+                // ── Lean Symmetry Bar ─────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("L", fontSize = 11.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.width(10.dp))
+                    Box(modifier = Modifier.weight(1f).height(3.dp).background(BorderDivider, RoundedCornerShape(2.dp))) {
+                        Box(modifier = Modifier.fillMaxHeight().fillMaxWidth((absMaxLeft / maxForBar).coerceIn(0f, 1f)).align(Alignment.CenterEnd).background(MidGrey, RoundedCornerShape(2.dp)))
+                    }
+                    Text("${absMaxLeft.toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MidGrey, fontFamily = Rajdhani, modifier = Modifier.width(32.dp), textAlign = TextAlign.End)
+                    Text("·", fontSize = 14.sp, color = Color(0xFF2A3028))
+                    Text("${absMaxRight.toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Rajdhani, modifier = Modifier.width(32.dp))
+                    Box(modifier = Modifier.weight(1f).height(3.dp).background(BorderDivider, RoundedCornerShape(2.dp))) {
+                        Box(modifier = Modifier.fillMaxHeight().fillMaxWidth((absMaxRight / maxForBar).coerceIn(0f, 1f)).background(highlightColor, RoundedCornerShape(2.dp)))
+                    }
+                    Text("R", fontSize = 11.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.width(10.dp), textAlign = TextAlign.End)
+                }
+
+                Spacer(Modifier.weight(0.01f))
             }
+        // ── Bottom Nav ────────────────────────────────────────────────────
+        Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
+            DashboardBottomNav(
+                activeTab = "dial",
+                highlightColor = highlightColor,
+                onDial = {},
+                onSessions = onShowHistory,
+                onSettings = onShowSettings
+            )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Control Buttons
-        StartupAnimatedElement(order = 7, triggered = startAnimTriggered, skipAnimation = hasPlayedStartupAnimation) {
-            ControlButtonsContentV3(
-                isRecording = isRecording,
-                isPaused = isPaused,
+        // Calibration guide overlay (triggered from subtitle button or TAP TO START)
+        if (showCalibrationGuide) {
+            CalibrationGuideOverlay(
+                service = service,
                 highlightColor = highlightColor,
-                onStart = { service.startRecording() },
-                onPause = { service.pauseRecording() },
-                onStop = { service.stopRecording() },
-                isMapMode = activeView == "map"
+                onDismiss = { showCalibrationGuide = false }
             )
         }
     }
@@ -1231,9 +1628,6 @@ fun DashboardLandscapeLayout(
     onToggleUnit: () -> Unit,
     onShowHistory: () -> Unit,
     onShowSettings: () -> Unit,
-    mapView: org.maplibre.android.maps.MapView?,
-    activeView: String,
-    onActiveViewChange: (String) -> Unit,
     isRecording: Boolean,
     isPaused: Boolean,
     startAnimTriggered: Boolean,
@@ -1248,218 +1642,336 @@ fun DashboardLandscapeLayout(
     rollingMaxRight: Float,
     rollingMax1000m: Float,
     rollingDistanceTarget: Int,
-    onResetMaxLean: () -> Unit = {}
+    onResetMaxLean: () -> Unit = {},
+    isCalibrationPendingReset: Boolean = false,
+    flickerAlpha: Float = 1f
 ) {
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
 
-    var mainMetric by rememberSaveable { mutableStateOf(MetricType.LEAN) }
-    var box1Metric by rememberSaveable { mutableStateOf(MetricType.SPEED) }
-    var box2Metric by rememberSaveable { mutableStateOf(MetricType.MAX_1000M) }
-    var box3Metric by rememberSaveable { mutableStateOf(MetricType.SESSION_MAX_LEFT) }
+    val currentLocation by service.currentLocation.collectAsStateWithLifecycle()
+    val pastSessions by service.pastSessions.collectAsStateWithLifecycle()
+    val isCalibrated by service.isCalibrated.collectAsStateWithLifecycle()
+    val gpsAccuracy = currentLocation?.accuracy ?: Float.MAX_VALUE
+    val gpsActive = currentLocation != null
+    val rideNumber = pastSessions.size + 1
+
+    val absMaxLeft = abs(sessionMaxLeft)
+    val absMaxRight = sessionMaxRight
+    val maxForBar = maxOf(absMaxLeft, absMaxRight, 1f)
+    val sessMax = maxOf(abs(sessionMaxLeft), sessionMaxRight)
+    val allTimeBest = maxOf(abs(allTimeMaxLeft), allTimeMaxRight)
+
+    // Session timer
+    var elapsedSecs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(isRecording) { if (!isRecording) elapsedSecs = 0L }
+    LaunchedEffect(isRecording, isPaused) {
+        if (isRecording && !isPaused) {
+            while (true) { delay(1000L); if (isRecording && !isPaused) elapsedSecs++ }
+        }
+    }
+    val timerText = remember(elapsedSecs) {
+        val h = elapsedSecs / 3600; val m = (elapsedSecs % 3600) / 60; val s = elapsedSecs % 60
+        if (h > 0) "%02d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+    }
+
+    // Clock
+    var clockText by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val c = Calendar.getInstance()
+            clockText = "%02d:%02d".format(c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+            delay(30_000L)
+        }
+    }
+    if (clockText.isEmpty()) {
+        val c = Calendar.getInstance()
+        clockText = "%02d:%02d".format(c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "recPulseL")
+    val recAlpha by infiniteTransition.animateFloat(
+        initialValue = 1f, targetValue = 0.12f,
+        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+        label = "recAlphaL"
+    )
+
+    val gpsLabel = if (gpsAccuracy < 30f) "GPS ±${gpsAccuracy.toInt()}m" else "IMPROVING SIGNAL"
+    val calibLabel = if (isCalibrated) "CALIBRATION LOCKED" else "NOT CALIBRATED"
+
+    val context = LocalContext.current
+    val activity = context as? AndroidActivity
+    var showStopDialogL by remember { mutableStateOf(false) }
+    var showCalibrationGuide by remember { mutableStateOf(false) }
+
+    if (showStopDialogL) {
+        AlertDialog(
+            onDismissRequest = { showStopDialogL = false },
+            containerColor = SurfaceCard, titleContentColor = PureWhite, textContentColor = MutedGrey,
+            title = { Text("Stop Session?") },
+            confirmButton = { TextButton(onClick = { showStopDialogL = false; service.stopRecording() }) {
+                Text("STOP", color = AlertRed, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { showStopDialogL = false }) {
+                Text("CANCEL", color = PureWhite) }
+            }
+        )
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+    Row(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+
+        // ── LEFT: Dial half ────────────────────────────────────────────────
+        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Status bar
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Canvas(Modifier.size(7.dp)) {
+                            drawCircle(if (isRecording && !isPaused) highlightColor.copy(alpha = recAlpha) else if (isRecording) highlightColor.copy(alpha = 0.4f) else MutedGrey)
+                        }
+                        Text(
+                            text = timerText,
+                            fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = MidGrey,
+                            fontWeight = FontWeight.Medium, letterSpacing = 0.02.sp
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Canvas(Modifier.size(7.dp)) { drawCircle(if (gpsActive) highlightColor else MutedGrey) }
+                        Text(if (gpsActive) "GPS 10Hz" else "GPS –", fontSize = 11.sp, color = MutedGrey, fontFamily = Inter)
+                        if (isRecording) {
+                            Spacer(Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier.clickable {
+                                    android.widget.Toast.makeText(activity, "Screen rotation is locked while a session is recording.", android.widget.Toast.LENGTH_SHORT).show()
+                                },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ScreenRotation,
+                                    contentDescription = "Rotation Locked",
+                                    tint = Color(0xFF3A4036),
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Canvas(Modifier.size(15.dp)) {
+                                    drawLine(Color(0xFF3A4036), Offset(0f, size.height), Offset(size.width, 0f), strokeWidth = 2.dp.toPx())
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Main dial
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    DashboardDial(lean = currentLean, highlightColor = highlightColor, modifier = Modifier.fillMaxSize())
+                }
+            }
+
+            // Calibration + GPS label pinned to bottom of left half
+            if (isCalibrated) {
+                Text(
+                    text = "$calibLabel  ·  $gpsLabel",
+                    fontSize = 10.sp, letterSpacing = 1.8.sp,
+                    color = (if (gpsAccuracy < 30f) MidGrey else MutedGrey).copy(alpha = if (isCalibrationPendingReset && isCalibrated) flickerAlpha else 1f),
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+                )
+            } else {
+                Row(
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "NOT CALIBRATED",
+                        fontSize = 10.sp, letterSpacing = 1.8.sp,
+                        color = AlertRed, fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "CALIBRATE ›",
+                        fontSize = 10.sp, letterSpacing = 1.5.sp,
+                        color = AlertRed.copy(alpha = 0.8f), fontFamily = Inter,
+                        modifier = Modifier
+                            .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.35f)), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                            .clickable { showCalibrationGuide = true }
+                    )
+                }
+            }
+        }
+
+        // Vertical divider
+        Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(BorderDivider))
+
+        // ── RIGHT: Data half ───────────────────────────────────────────────
+        Column(
+            modifier = Modifier.weight(1f).fillMaxHeight()
+                .padding(start = 20.dp, end = 20.dp, top = 12.dp)
+        ) {
+            // Tap-to-start indicator (same style as portrait) — above the speed value
             Row(
-                modifier = Modifier.fillMaxWidth().weight(1f),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .background(if (!isRecording) highlightColor.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(8.dp))
+                        .border(if (!isRecording) BorderStroke(1.dp, highlightColor) else BorderStroke(0.dp, Color.Transparent), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .clickable {
+                            when {
+                                !isCalibrated && !isRecording -> {
+                                    showCalibrationGuide = true
+                                }
+                                !isRecording || isPaused -> service.startRecording()
+                            }
+                        }
+                ) {
+                    Canvas(Modifier.size(8.dp)) {
+                        drawCircle(if (isRecording && !isPaused) highlightColor.copy(alpha = recAlpha) else if (isRecording) highlightColor.copy(alpha = 0.4f) else highlightColor)
+                    }
+                    Text(
+                        text = if (isRecording) timerText else "TAP TO START",
+                        fontSize = 15.sp,
+                        color = if (isRecording) MidGrey else highlightColor,
+                        fontFamily = Rajdhani, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp
+                    )
+                }
+
+                if (isRecording || isPaused) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = { if (isPaused) service.startRecording() else service.pauseRecording() },
+                            border = BorderStroke(1.dp, if (isRecording && !isPaused) highlightColor.copy(alpha = 0.5f) else BorderDivider),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isRecording && !isPaused) highlightColor else MutedGrey),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(34.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                        ) {
+                            Text(
+                                text = if (isRecording && !isPaused) "⏸  PAUSE" else "▶  RESUME",
+                                fontSize = 11.sp, letterSpacing = 0.8.sp, fontFamily = Inter
+                            )
+                        }
+                        Box(
+                            modifier = Modifier.size(34.dp)
+                                .background(AlertRed.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.5f)), RoundedCornerShape(8.dp))
+                                .clickable { showStopDialogL = true },
+                            contentAlignment = Alignment.Center
+                        ) { Text("■", fontSize = 11.sp, color = AlertRed) }
+                    }
+                }
+            }
+
+            // Speed + Ride #
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Left Column: All buttons and toggles
-                Column(
-                    modifier = Modifier
-                        .weight(0.7f)
-                        .fillMaxHeight()
-                        .zIndex(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (activeView == "map") {
-                        ControlButtonsContentV3(
-                            isRecording = isRecording,
-                            isPaused = isPaused,
-                            highlightColor = highlightColor,
-                            onStart = { service.startRecording() },
-                            onPause = { service.pauseRecording() },
-                            onStop = { service.stopRecording() },
-                            isMapMode = true
-                        )
-                    }
-                }
-
-                // Central space where indicator is shown
-                if (activeView == "lean") {
-                    LeanHorizonIndicator(
-                        lean = currentLean,
-                        speed = currentSpeed,
-                        highlightColor = highlightColor,
-                        modifier = Modifier
-                            .weight(1.8f)
-                            .fillMaxHeight(),
-                        sizeScale = 1.3f,
-                        yOffsetPercent = 0.0f
+                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = if (isMetric) currentSpeed.toInt().toString() else (currentSpeed * 0.621371).toInt().toString(),
+                        fontSize = 64.sp, fontWeight = FontWeight.SemiBold, lineHeight = 54.sp,
+                        letterSpacing = (-1.2).sp, color = PureWhite, fontFamily = Rajdhani
                     )
-                } else {
-                    Spacer(modifier = Modifier.weight(1.8f))
-                }
-
-                // Right Column: All stats / data
-                Column(
-                    modifier = Modifier
-                        .weight(1.0f)
-                        .fillMaxHeight()
-                        .zIndex(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    horizontalAlignment = Alignment.End
-                ) {
-                    TopRightControls(
-                        onShowSettings = onShowSettings,
-                        onShowHistory = onShowHistory,
-                        onCalibrate = { service.calibrateSensors() },
-                        highlightColor = highlightColor
-                    )
-
-                    CustomizableMetricCard(
-                        selectedMetric = mainMetric,
-                        onMetricSelected = { mainMetric = it },
-                        currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                        rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                        sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                        sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                        highlightColor = highlightColor, modifier = Modifier.fillMaxWidth(), height = 90.dp,
-                        onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                        onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
+                    Text(
+                        text = if (isMetric) "KM/H" else "MPH",
+                        fontSize = 12.sp, letterSpacing = 1.2.sp, color = MutedGrey, fontFamily = Inter,
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
                 }
+                Text(
+                    text = "RIDE #$rideNumber",
+                    fontSize = 11.sp, letterSpacing = 0.8.sp, color = MutedGrey, fontFamily = Inter,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
             }
-            
-            if (activeView == "lean") {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().wrapContentHeight(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    // Start and Stop buttons on the bottom left
-                    Column(
-                        modifier = Modifier.weight(0.9f),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                if (!isRecording || isPaused) service.startRecording()
-                                else service.pauseRecording()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isRecording && !isPaused) AlertRed else highlightColor,
-                                contentColor = Color.Black
-                            ),
-                            modifier = Modifier.fillMaxWidth().height(50.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            border = BorderStroke(1.5.dp, Color.Black.copy(alpha = 0.3f))
-                        ) {
-                            Text(
-                                text = if (isRecording && !isPaused) "PAUSE SESSION" else if (isPaused) "RESUME SESSION" else "START SESSION",
-                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = Inter, color = Color.Black, fontWeight = FontWeight.ExtraBold),
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
+            HorizontalDivider(color = BorderDivider)
 
-                        var showStopDialog by remember { mutableStateOf(false) }
-
-                        if (showStopDialog) {
-                            AlertDialog(
-                                onDismissRequest = { showStopDialog = false },
-                                title = { Text("Stop Recording") },
-                                text = { Text("Are you sure you want to stop recording?") },
-                                confirmButton = {
-                                    TextButton(onClick = {
-                                        showStopDialog = false
-                                        service.stopRecording()
-                                    }) {
-                                        Text("Stop", color = AlertRed)
-                                    }
-                                },
-                                dismissButton = {
-                                    TextButton(onClick = { showStopDialog = false }) {
-                                        Text("Cancel", color = PureWhite)
-                                    }
-                                },
-                                containerColor = SurfaceCard,
-                                titleContentColor = PureWhite,
-                                textContentColor = MutedGrey
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                if (isRecording) {
-                                    showStopDialog = true
-                                } else {
-                                    service.stopRecording()
-                                }
-                            },
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = DeepCarbon,
-                                contentColor = AlertRed
-                            ),
-                            border = BorderStroke(2.5.dp, AlertRed),
-                            modifier = Modifier.fillMaxWidth().height(50.dp),
-                            shape = RoundedCornerShape(16.dp)
-                        ) {
-                            Text(
-                                text = "STOP",
-                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = Inter, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp),
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
+            // 3-stat row
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("CORNERS", fontSize = 10.sp, letterSpacing = 1.6.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.padding(bottom = 3.dp))
+                    Text(corners.size.toString(), fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Rajdhani, lineHeight = 28.sp)
+                }
+                Box(Modifier.width(1.dp).height(44.dp).background(BorderDivider).align(Alignment.CenterVertically))
+                Column(modifier = Modifier.weight(1f).padding(horizontal = 14.dp)) {
+                    Text("SESS MAX", fontSize = 10.sp, letterSpacing = 1.6.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.padding(bottom = 3.dp))
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(sessMax.toInt().toString(), fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Rajdhani, lineHeight = 28.sp)
+                        Text("°", fontSize = 14.sp, color = highlightColor, fontFamily = Rajdhani)
                     }
-
-                    Spacer(modifier = Modifier.weight(1.2f))
-
-                    // Remaining 3 Value Boxes — narrower, grouped in bottom right corner
-                    Row(
-                        modifier = Modifier.weight(1.8f),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        CustomizableMetricCard(
-                            selectedMetric = box1Metric,
-                            onMetricSelected = { box1Metric = it },
-                            currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                            rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                            sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                            sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 52.dp,
-                            onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                            onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
-                        )
-
-                        CustomizableMetricCard(
-                            selectedMetric = box2Metric,
-                            onMetricSelected = { box2Metric = it },
-                            currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                            rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                            sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                            sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 52.dp,
-                            onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                            onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
-                        )
-
-                        CustomizableMetricCard(
-                            selectedMetric = box3Metric,
-                            onMetricSelected = { box3Metric = it },
-                            currentLean = currentLean, currentSpeed = currentSpeed, rollingMax1000m = rollingMax1000m,
-                            rollingDistanceTarget = rollingDistanceTarget, isMetric = isMetric, sessionMaxLeft = sessionMaxLeft,
-                            sessionMaxRight = sessionMaxRight, allTimeMaxLeft = allTimeMaxLeft, allTimeMaxRight = allTimeMaxRight,
-                            sessionMaxPitch = sessionMaxPitch, cornersCount = corners.size, activeView = activeView,
-                            highlightColor = highlightColor, modifier = Modifier.weight(1f), height = 52.dp,
-                            onReset1000m = onResetMaxLean, onResetSessionLean = { service.resetSessionLean() },
-                            onResetSessionPitch = { service.resetSessionPitch() }, onResetCorners = { service.resetCornerCount() }
-                        )
+                }
+                Box(Modifier.width(1.dp).height(44.dp).background(BorderDivider).align(Alignment.CenterVertically))
+                Column(modifier = Modifier.weight(1f).padding(start = 14.dp)) {
+                    Text("ALL-TIME", fontSize = 10.sp, letterSpacing = 1.6.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.padding(bottom = 3.dp))
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(allTimeBest.toInt().toString(), fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = highlightColor, fontFamily = Rajdhani, lineHeight = 28.sp)
+                        Text("°", fontSize = 14.sp, color = MutedGrey, fontFamily = Rajdhani)
                     }
                 }
             }
+            HorizontalDivider(color = BorderDivider)
+
+            // L/R symmetry bar
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("L", fontSize = 11.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.width(10.dp))
+                Box(modifier = Modifier.weight(1f).height(3.dp).background(BorderDivider, RoundedCornerShape(2.dp))) {
+                    Box(modifier = Modifier.fillMaxHeight().fillMaxWidth((absMaxLeft / maxForBar).coerceIn(0f, 1f)).align(Alignment.CenterEnd).background(MidGrey, RoundedCornerShape(2.dp)))
+                }
+                Text("${absMaxLeft.toInt()}°", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MidGrey, fontFamily = Rajdhani, modifier = Modifier.width(32.dp), textAlign = TextAlign.End)
+                Text("·", fontSize = 14.sp, color = Color(0xFF2A3028))
+                Text("${absMaxRight.toInt()}°", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Rajdhani, modifier = Modifier.width(32.dp))
+                Box(modifier = Modifier.weight(1f).height(3.dp).background(BorderDivider, RoundedCornerShape(2.dp))) {
+                    Box(modifier = Modifier.fillMaxHeight().fillMaxWidth((absMaxRight / maxForBar).coerceIn(0f, 1f)).background(highlightColor, RoundedCornerShape(2.dp)))
+                }
+                Text("R", fontSize = 11.sp, color = MutedGrey, fontFamily = Inter, modifier = Modifier.width(10.dp), textAlign = TextAlign.End)
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // Push nav to bottom
+            Spacer(modifier = Modifier.weight(1f))
+
+            // Bottom nav
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // DIAL — active
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("DIAL", fontSize = 11.sp, letterSpacing = 1.2.sp, color = highlightColor, fontFamily = Inter, modifier = Modifier.padding(bottom = 2.dp))
+                    Box(Modifier.height(1.5.dp).width(28.dp).background(highlightColor))
+                }
+                // SESSIONS
+                Text("SESSIONS", fontSize = 11.sp, letterSpacing = 1.2.sp, color = MutedGrey, fontFamily = Inter,
+                    modifier = Modifier.clickable { onShowHistory() })
+                // Settings
+                Text("⚙", fontSize = 15.sp, color = MutedGrey, modifier = Modifier.clickable { onShowSettings() })
+            }
+        }
+    }
+
+        // Calibration guide overlay (triggered from the NOT CALIBRATED button)
+        if (showCalibrationGuide) {
+            CalibrationGuideOverlay(
+                service = service,
+                highlightColor = highlightColor,
+                onDismiss = { showCalibrationGuide = false }
+            )
         }
     }
 }
