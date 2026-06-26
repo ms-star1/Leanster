@@ -232,15 +232,16 @@ class MainActivity : ComponentActivity() {
                         3 -> {
                             val sessions by service.pastSessions.collectAsStateWithLifecycle()
                             var selectedSession by remember { mutableStateOf<RideSession?>(null) }
+                            var ghostPair by remember { mutableStateOf<Pair<RideSession, RideSession>?>(null) }
 
                             BackHandler(enabled = true) {
-                                if (selectedSession != null) {
-                                    selectedSession = null
-                                } else {
-                                    currentTab = 0
+                                when {
+                                    ghostPair != null -> ghostPair = null
+                                    selectedSession != null -> selectedSession = null
+                                    else -> currentTab = 0
                                 }
                             }
-                            
+
                             Box(modifier = Modifier.fillMaxSize()) {
                                 HistoryMenuScreen(
                                     sessions = sessions,
@@ -258,14 +259,28 @@ class MainActivity : ComponentActivity() {
                                         shareCsvFile(context, csvFile)
                                     }
                                 )
-                                
+
                                 if (selectedSession != null) {
                                     SessionSummaryOverlay(
                                         session = selectedSession!!,
                                         isMetric = isMetric,
                                         highlightColor = highlightColor,
                                         onClose = { selectedSession = null },
-                                        mapView = mapView
+                                        mapView = mapView,
+                                        onGhostReplay = { current, ghost ->
+                                            ghostPair = Pair(current, ghost)
+                                        },
+                                        allSessions = sessions
+                                    )
+                                }
+
+                                ghostPair?.let { (current, ghost) ->
+                                    GhostReplayScreen(
+                                        currentSession = current,
+                                        ghostSession = ghost,
+                                        highlightColor = highlightColor,
+                                        mapView = mapView,
+                                        onClose = { ghostPair = null }
                                     )
                                 }
                             }

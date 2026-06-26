@@ -3,6 +3,8 @@
 package com.beispiel.ridetracker
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -64,6 +66,7 @@ fun HistoryMenuScreen(
 
     var sessionToDelete by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
+    var showReportCard by remember { mutableStateOf(false) }
 
     if (sessionToDelete != null) {
         AlertDialog(
@@ -122,10 +125,28 @@ fun HistoryMenuScreen(
             }
             Spacer(modifier = Modifier.width(16.dp))
             Text(
-                "PAST SESSIONS",
+                "RIDES",
                 style = MaterialTheme.typography.headlineMedium.copy(fontFamily = Inter),
                 color = highlightColor
             )
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(
+                onClick = { showReportCard = !showReportCard },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = if (showReportCard) highlightColor.copy(alpha = 0.15f) else Color.Transparent
+                ),
+                border = androidx.compose.foundation.BorderStroke(1.dp, if (showReportCard) highlightColor else BorderDivider),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Text("Report", color = if (showReportCard) highlightColor else MutedGrey,
+                    style = MaterialTheme.typography.labelSmall)
+            }
+        }
+
+        if (showReportCard) {
+            ReportCardScreen(sessions = sessions, highlightColor = highlightColor, isMetric = isMetric)
+            return@Column
         }
 
         // Search Bar at Header
@@ -308,7 +329,9 @@ fun SessionSummaryOverlay(
     isMetric: Boolean,
     onClose: () -> Unit,
     highlightColor: Color = NeonCyan,
-    mapView: org.maplibre.android.maps.MapView? = null
+    mapView: org.maplibre.android.maps.MapView? = null,
+    onGhostReplay: ((RideSession, RideSession) -> Unit)? = null,
+    allSessions: List<RideSession> = emptyList()
 ) {
     val mutedHighlightColor = when (highlightColor) {
         YamahaBlue -> MutedYamahaBlue
@@ -350,6 +373,30 @@ fun SessionSummaryOverlay(
                         ),
                         color = highlightColor
                     )
+                    if (onGhostReplay != null && allSessions.size >= 2) {
+                        val otherSessions = allSessions.filter { it.id != session.id }
+                        val ghostSession = otherSessions.maxByOrNull { overlap ->
+                            session.corners.count { sc ->
+                                otherSessions.any { os -> os.corners.any { oc ->
+                                    kotlin.math.abs(sc.centroidLat - oc.centroidLat) < 0.0003 &&
+                                    kotlin.math.abs(sc.centroidLng - oc.centroidLng) < 0.0003
+                                }}
+                            }
+                        } ?: otherSessions.maxByOrNull { it.startTime }
+                        if (ghostSession != null) {
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(
+                                onClick = { onGhostReplay(session, ghostSession) },
+                                colors = ButtonDefaults.outlinedButtonColors(),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, highlightColor),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("Ghost", color = highlightColor,
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
 
                 val dateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
@@ -358,20 +405,29 @@ fun SessionSummaryOverlay(
                 val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
                 val endTimeStr = if (session.endTime > 0L) timeFormat.format(java.util.Date(session.endTime)) else "--:--"
 
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    modifier = Modifier.padding(end = 4.dp)
-                ) {
-                    Text(
-                        text = "$dateStr",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                        color = PureWhite
-                    )
-                    Text(
-                        text = "$startTimeStr - $endTimeStr",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MutedGrey
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    IconButton(
+                        onClick = { shareSessionCard(context, session, highlightColor, isMetric) },
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(androidx.compose.material.icons.Icons.Default.Share,
+                            contentDescription = "Share", tint = MutedGrey,
+                            modifier = Modifier.size(18.dp))
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = dateStr,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = PureWhite
+                        )
+                        Text(
+                            text = "$startTimeStr - $endTimeStr",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MutedGrey
+                        )
+                    }
                 }
             }
 
@@ -786,6 +842,24 @@ fun SessionSummaryScreen(
                 }
             }
 
+            if (!isLandscape) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LeanSymmetryCard(
+                    leftMax = abs(maxLeft),
+                    rightMax = maxRight,
+                    highlightColor = highlightColor
+                )
+                if (corners.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    CornerBreakdownCard(
+                        corners = corners,
+                        points = points,
+                        isMetric = isMetric,
+                        highlightColor = highlightColor
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
 
             // Bottom Buttons
@@ -810,6 +884,114 @@ fun SessionSummaryScreen(
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text("SAVE SESSION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LeanSymmetryCard(leftMax: Float, rightMax: Float, highlightColor: Color) {
+    val total = leftMax + rightMax
+    val leftRatio = if (total > 0f) leftMax / total else 0.5f
+    val rightRatio = if (total > 0f) rightMax / total else 0.5f
+    val imbalancePct = if (total > 0f) (kotlin.math.abs(leftMax - rightMax) / total * 100).toInt() else 0
+    val weakSide = when {
+        leftMax < rightMax * 0.85f -> "left"
+        rightMax < leftMax * 0.85f -> "right"
+        else -> null
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("LEAN SYMMETRY", style = MaterialTheme.typography.labelSmall,
+                    color = highlightColor, letterSpacing = 1.sp)
+                Text("$imbalancePct% imbalance", style = MaterialTheme.typography.labelSmall,
+                    color = MutedGrey)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("L ${leftMax.toInt()}°", style = MaterialTheme.typography.labelMedium,
+                    color = AlertRed, modifier = Modifier.width(44.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                Spacer(Modifier.width(8.dp))
+                Box(modifier = Modifier.weight(1f).height(14.dp).clip(RoundedCornerShape(7.dp))
+                    .background(SurfaceCard)) {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Box(modifier = Modifier.weight(leftRatio).fillMaxHeight()
+                            .background(AlertRed.copy(alpha = 0.8f)))
+                        Box(modifier = Modifier.weight(rightRatio).fillMaxHeight()
+                            .background(highlightColor.copy(alpha = 0.8f)))
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("${rightMax.toInt()}° R", style = MaterialTheme.typography.labelMedium,
+                    color = highlightColor, modifier = Modifier.width(44.dp))
+            }
+            if (weakSide != null) {
+                Spacer(Modifier.height(6.dp))
+                Text("Your $weakSide lean is weaker — focus on ${weakSide}-handers",
+                    style = MaterialTheme.typography.bodySmall, color = MutedGrey)
+            }
+        }
+    }
+}
+
+@Composable
+fun CornerBreakdownCard(
+    corners: List<CornerEvent>,
+    points: List<TelemetryPoint>,
+    isMetric: Boolean,
+    highlightColor: Color
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text("CORNERS", style = MaterialTheme.typography.labelSmall,
+                color = highlightColor, letterSpacing = 1.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text("#", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.width(24.dp))
+                Text("DIR", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.width(36.dp))
+                Text("LEAN", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.weight(1f))
+                Text("SPEED", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.width(56.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+            }
+            Spacer(Modifier.height(4.dp))
+            val display = corners.takeLast(10)
+            display.forEachIndexed { i, corner ->
+                val maxLean = maxOf(abs(corner.maxLeftLean), corner.maxRightLean)
+                val dir = if (abs(corner.maxLeftLean) > corner.maxRightLean) "L" else "R"
+                val dirColor = if (dir == "L") AlertRed else highlightColor
+                val speedRaw = points.getOrNull(corner.maxLeanIndex)?.speedKmh ?: 0.0
+                val speed = if (isMetric) speedRaw else speedRaw * 0.621371
+                val speedUnit = if (isMetric) "km/h" else "mph"
+                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("${corners.size - display.size + i + 1}", style = MaterialTheme.typography.labelSmall,
+                        color = MutedGrey, modifier = Modifier.width(24.dp))
+                    Text(dir, style = MaterialTheme.typography.labelMedium, color = dirColor,
+                        fontWeight = FontWeight.Bold, modifier = Modifier.width(36.dp))
+                    Text("${maxLean.toInt()}°", style = MaterialTheme.typography.labelMedium,
+                        color = PureWhite, modifier = Modifier.weight(1f))
+                    Text("${speed.toInt()} $speedUnit", style = MaterialTheme.typography.labelSmall,
+                        color = MutedGrey, modifier = Modifier.width(56.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End)
                 }
             }
         }

@@ -32,6 +32,11 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.annotations.PolylineOptions
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
@@ -365,7 +370,7 @@ fun AnalyticsMapContent(
                         },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(8.dp),
                         border = BorderStroke(1.dp, BorderDivider)
                     ) {
                         Text("Next ⏭️", color = PureWhite)
@@ -374,4 +379,146 @@ fun AnalyticsMapContent(
             }
         }
     }
+}
+
+@Composable
+fun GhostReplayScreen(
+    currentSession: RideSession,
+    ghostSession: RideSession,
+    highlightColor: Color,
+    mapView: MapView,
+    onClose: () -> Unit
+) {
+    var isPlaying by remember { mutableStateOf(false) }
+    var speedMultiplier by remember { mutableStateOf(1f) }
+    var progressMs by remember { mutableStateOf(0L) }
+
+    val currentPoints = currentSession.points
+    val ghostPoints = ghostSession.points
+    val currentDuration = (currentPoints.lastOrNull()?.timestamp ?: 0L) -
+            (currentPoints.firstOrNull()?.timestamp ?: 0L)
+    val ghostDuration = (ghostPoints.lastOrNull()?.timestamp ?: 0L) -
+            (ghostPoints.firstOrNull()?.timestamp ?: 0L)
+    val maxDuration = maxOf(currentDuration, ghostDuration).coerceAtLeast(1L)
+
+    var mapLibreRef by remember { mutableStateOf<MapLibreMap?>(null) }
+    val context = LocalContext.current
+
+    LaunchedEffect(isPlaying, speedMultiplier) {
+        while (isPlaying) {
+            delay(16L)
+            progressMs = (progressMs + (16L * speedMultiplier).toLong()).coerceAtMost(maxDuration)
+            if (progressMs >= maxDuration) isPlaying = false
+        }
+    }
+
+    val currentPos = remember(progressMs) {
+        interpolatePosition(currentPoints, progressMs)
+    }
+    val ghostPos = remember(progressMs) {
+        interpolatePosition(ghostPoints, progressMs)
+    }
+
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+        AndroidView(
+            factory = { mapView },
+            modifier = Modifier.fillMaxSize(),
+            update = { mv ->
+                mv.getMapAsync { map ->
+                    mapLibreRef = map
+                    if (map.style == null) {
+                        try {
+                            val styleJson = context.assets.open("style.json").bufferedReader().use { it.readText() }
+                            map.setStyle(Style.Builder().fromJson(styleJson))
+                        } catch (_: Exception) {}
+                    }
+                    map.clear()
+                    if (currentPoints.size >= 2) {
+                        map.addPolyline(PolylineOptions()
+                            .addAll(currentPoints.map { LatLng(it.latitude, it.longitude) })
+                            .color(highlightColor.toArgb()).width(5f))
+                    }
+                    if (ghostPoints.size >= 2) {
+                        map.addPolyline(PolylineOptions()
+                            .addAll(ghostPoints.map { LatLng(it.latitude, it.longitude) })
+                            .color(AlertRed.copy(alpha = 0.6f).toArgb()).width(4f))
+                    }
+                    currentPoints.firstOrNull()?.let { p ->
+                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(p.latitude, p.longitude), 14.0))
+                    }
+                }
+            }
+        )
+
+        LaunchedEffect(currentPos, ghostPos) {
+            mapLibreRef?.let { map ->
+                currentPos?.let { map.animateCamera(CameraUpdateFactory.newLatLng(LatLng(it.first, it.second))) }
+            }
+        }
+
+        Column(
+            modifier = Modifier.align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(DeepCarbon.copy(alpha = 0.9f))
+                .padding(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(modifier = Modifier.size(12.dp).background(highlightColor, RoundedCornerShape(6.dp)))
+                Text("You", style = MaterialTheme.typography.labelSmall, color = PureWhite)
+                Spacer(Modifier.width(8.dp))
+                Box(modifier = Modifier.size(12.dp).background(AlertRed.copy(alpha = 0.8f), RoundedCornerShape(6.dp)))
+                Text("Ghost", style = MaterialTheme.typography.labelSmall, color = PureWhite)
+            }
+            Spacer(Modifier.height(8.dp))
+            androidx.compose.material3.Slider(
+                value = progressMs.toFloat() / maxDuration,
+                onValueChange = { progressMs = (it * maxDuration).toLong() },
+                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = highlightColor, activeTrackColor = highlightColor),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { isPlaying = !isPlaying }) {
+                    Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = null, tint = highlightColor)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(1f, 2f, 5f).forEach { mult ->
+                        OutlinedButton(
+                            onClick = { speedMultiplier = mult },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (speedMultiplier == mult) highlightColor.copy(alpha = 0.2f) else Color.Transparent
+                            ),
+                            border = BorderStroke(1.dp, if (speedMultiplier == mult) highlightColor else BorderDivider),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("${mult.toInt()}x", color = if (speedMultiplier == mult) highlightColor else MutedGrey,
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                TextButton(onClick = onClose) {
+                    Text("Close", color = MutedGrey, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+private fun interpolatePosition(points: List<TelemetryPoint>, offsetMs: Long): Pair<Double, Double>? {
+    if (points.isEmpty()) return null
+    val t0 = points.first().timestamp
+    val target = t0 + offsetMs
+    if (target <= t0) return Pair(points.first().latitude, points.first().longitude)
+    if (target >= points.last().timestamp) return Pair(points.last().latitude, points.last().longitude)
+    var lo = 0; var hi = points.lastIndex
+    while (lo < hi - 1) { val mid = (lo + hi) / 2; if (points[mid].timestamp <= target) lo = mid else hi = mid }
+    val a = points[lo]; val b = points[hi]
+    val frac = if (b.timestamp == a.timestamp) 0.0 else (target - a.timestamp).toDouble() / (b.timestamp - a.timestamp)
+    return Pair(a.latitude + (b.latitude - a.latitude) * frac, a.longitude + (b.longitude - a.longitude) * frac)
 }
