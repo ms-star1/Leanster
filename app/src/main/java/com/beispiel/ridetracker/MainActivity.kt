@@ -231,6 +231,8 @@ class MainActivity : ComponentActivity() {
                         }
                         3 -> {
                             val sessions by service.pastSessions.collectAsStateWithLifecycle()
+                            val demoSession = remember { createDemoSession() }
+                            val allSessionsWithDemo = remember(sessions) { listOf(demoSession) + sessions }
                             var selectedSession by remember { mutableStateOf<RideSession?>(null) }
                             var ghostPair by remember { mutableStateOf<Pair<RideSession, RideSession>?>(null) }
 
@@ -270,7 +272,11 @@ class MainActivity : ComponentActivity() {
                                         onGhostReplay = { current, ghost ->
                                             ghostPair = Pair(current, ghost)
                                         },
-                                        allSessions = sessions
+                                        allSessions = allSessionsWithDemo,
+                                        onDelete = { sessionId ->
+                                            service.deleteSession(sessionId)
+                                            selectedSession = null
+                                        }
                                     )
                                 }
 

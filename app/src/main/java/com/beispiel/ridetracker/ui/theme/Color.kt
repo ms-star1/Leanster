@@ -2,42 +2,47 @@ package com.beispiel.ridetracker.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Carbon & Neon Theme - Final Design Sheet
-val DeepCarbon = Color(0xFF0B0E14)
-val SurfaceCard = Color(0xFF141A24)
-val BorderDivider = Color(0xFF1F2937)
+// ── Base palette (Carbon & Moss theme) ──────────────────────────────────────
+val DeepCarbon    = Color(0xFF070908)   // screen background
+val SurfaceCard   = Color(0xFF131813)   // card / elevated surface
+val BorderDivider = Color(0xFF1D211B)   // subtle divider
+val BorderActive  = Color(0xFF2A4020)   // highlighted border / active state
 
-val NeonCyan = Color(0xFF00F5D4)
-val MutedCyan = Color(0xFF00A38D)
+// ── Text hierarchy ───────────────────────────────────────────────────────────
+val PureWhite  = Color(0xFFEEF2EE)   // primary text
+val MutedGrey  = Color(0xFF5E655D)   // secondary / placeholder text
+val MidGrey    = Color(0xFF9AA297)   // tertiary / label text
 
-val NeonBlue = Color(0xFF1E6CFF)
-val MutedBlue = Color(0xFF0039A6)
+// ── Brand accent: NeonCyan (default) ────────────────────────────────────────
+val NeonCyan   = Color(0xFF00F5D4)
+val MutedCyan  = Color(0xFF00A38D)
 
-val NeonRed = Color(0xFFFF2A4B)
-val MutedRed = Color(0xFFB50D27)
-
-val NeonGreen = Color(0xFF39FF14)
-val MutedGreen = Color(0xFF1E8014)
-
-// Brand High-Performance Colors
-val YamahaBlue = Color(0xFF1E6CFF) // Vibrating Yamaha Racing Blue
+// ── Brand accent: Yamaha Blue ────────────────────────────────────────────────
+val YamahaBlue      = Color(0xFF1E6CFF)
 val MutedYamahaBlue = Color(0xFF0039A6)
 
-val DucatiRed = Color(0xFFFF2A4B) // Intense Ducati Red
+// ── Brand accent: Ducati Red ─────────────────────────────────────────────────
+val DucatiRed      = Color(0xFFFF2A4B)
 val MutedDucatiRed = Color(0xFFB50D27)
 
-val KawasakiGreen = Color(0xFF39FF14) // Lime Kawasaki Green
-val MutedKawasakiGreen = Color(0xFF1E8014)
+// ── Brand accent: Kawasaki Green ─────────────────────────────────────────────
+val KawasakiGreen      = Color(0xFF6FD000)   // design-spec lime-green
+val MutedKawasakiGreen = Color(0xFF3E7800)
 
-val PureWhiteHighlight = Color(0xFFFFFFFF)
+// ── Brand accent: Pure White ─────────────────────────────────────────────────
+val PureWhiteHighlight  = Color(0xFFFFFFFF)
 val MutedWhiteHighlight = Color(0xFF8E9297)
 
-val AlertRed = Color(0xFFFF2A4B)
+// ── Semantic ─────────────────────────────────────────────────────────────────
+val AlertRed  = Color(0xFFFF2A4B)
+val NeonGreen = Color(0xFF6FD000)   // alias used in legacy code
 
-val PureWhite = Color(0xFFFFFFFF)
-val MutedGrey = Color(0xFF8A95A5)
-
-// Keeping some semantic aliases for convenience
-val DeepBase = DeepCarbon
-val CardBackground = SurfaceCard
-val SignalRed = AlertRed
+// ── Deprecated aliases (kept for compiler compat) ────────────────────────────
+val DeepBase        = DeepCarbon
+val CardBackground  = SurfaceCard
+val SignalRed       = AlertRed
+val NeonBlue        = YamahaBlue
+val MutedBlue       = MutedYamahaBlue
+val NeonRed         = DucatiRed
+val MutedRed        = MutedDucatiRed
+val MutedGreen      = MutedKawasakiGreen

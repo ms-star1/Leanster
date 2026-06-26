@@ -8,6 +8,7 @@ import android.view.WindowManager
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -421,13 +422,17 @@ fun SettingsScreen(
                         .fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
-                    // Left Column: Color & Unit System
+                    // Left Column: Brand + Unit System
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .verticalScroll(scrollState1),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        Text("BRAND PRESET", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                        BrandColorPicker(highlightColorName = highlightColorName, onColorChange = onColorChange)
+
+                        HorizontalDivider(color = BorderDivider)
                         Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                         Row(
                             modifier = Modifier
@@ -506,44 +511,8 @@ fun SettingsScreen(
                         }
 
                         if (isDevModeActive) {
-                            Spacer(modifier = Modifier.height(16.dp))
+                            HorizontalDivider(color = BorderDivider)
                             Text("DEVELOPER OPTIONS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                            
-                            Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleSmall, color = MutedGrey)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
-                                    val color = when(colorName) {
-                                        "Yamaha Blue" -> YamahaBlue
-                                        "Ducati Red" -> DucatiRed
-                                        "Kawasaki Green" -> KawasakiGreen
-                                        "Pure White" -> PureWhiteHighlight
-                                        else -> NeonCyan
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .background(color, RoundedCornerShape(20.dp))
-                                            .clickable { onColorChange(colorName) }
-                                            .padding(4.dp)
-                                    ) {
-                                        if (highlightColorName == colorName) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .background(DeepCarbon, RoundedCornerShape(20.dp))
-                                                    .padding(4.dp)
-                                            ) {
-                                                Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(20.dp)))
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -641,6 +610,9 @@ fun SettingsScreen(
                         .verticalScroll(scrollStateSingle),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    Text("BRAND PRESET", style = MaterialTheme.typography.titleMedium, color = highlightColor)
+                    BrandColorPicker(highlightColorName = highlightColorName, onColorChange = onColorChange)
+                    HorizontalDivider(color = BorderDivider)
                     Text("UNIT SYSTEM", style = MaterialTheme.typography.titleMedium, color = highlightColor)
                     Row(
                         modifier = Modifier
@@ -759,44 +731,8 @@ fun SettingsScreen(
                     }
 
                     if (isDevModeActive) {
-                        Spacer(modifier = Modifier.height(16.dp))
+                        HorizontalDivider(color = BorderDivider)
                         Text("DEVELOPER OPTIONS", style = MaterialTheme.typography.titleMedium, color = highlightColor)
-                        
-                        Text("HIGHLIGHT COLOR", style = MaterialTheme.typography.titleSmall, color = MutedGrey)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf("Cyan", "Pure White", "Kawasaki Green", "Ducati Red", "Yamaha Blue").forEach { colorName ->
-                                val color = when(colorName) {
-                                    "Yamaha Blue" -> YamahaBlue
-                                    "Ducati Red" -> DucatiRed
-                                    "Kawasaki Green" -> KawasakiGreen
-                                    "Pure White" -> PureWhiteHighlight
-                                    else -> NeonCyan
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .background(color, RoundedCornerShape(21.dp))
-                                        .clickable { onColorChange(colorName) }
-                                        .padding(4.dp)
-                                ) {
-                                    if (highlightColorName == colorName) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(DeepCarbon, RoundedCornerShape(21.dp))
-                                                .padding(4.dp)
-                                        ) {
-                                            Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(21.dp)))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -825,6 +761,41 @@ fun SettingsScreen(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text("SAVE & CLOSE", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrandColorPicker(highlightColorName: String, onColorChange: (String) -> Unit) {
+    val presets = listOf(
+        "Cyan"           to NeonCyan,
+        "Kawasaki Green" to KawasakiGreen,
+        "Ducati Red"     to DucatiRed,
+        "Yamaha Blue"    to YamahaBlue,
+        "Pure White"     to PureWhiteHighlight
+    )
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        presets.forEach { (name, color) ->
+            val selected = highlightColorName == name
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(
+                        if (selected) color else color.copy(alpha = 0.35f),
+                        androidx.compose.foundation.shape.CircleShape
+                    )
+                    .border(
+                        width = if (selected) 2.dp else 1.dp,
+                        color = if (selected) color else color.copy(alpha = 0.4f),
+                        shape = androidx.compose.foundation.shape.CircleShape
+                    )
+                    .clickable { onColorChange(name) },
+                contentAlignment = Alignment.Center
+            ) {
+                if (selected) {
+                    Box(modifier = Modifier.size(14.dp).background(DeepCarbon, androidx.compose.foundation.shape.CircleShape))
+                }
             }
         }
     }
@@ -897,7 +868,7 @@ fun TopRightControls(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Past Sessions", color = PureWhite) },
+                    text = { Text("My Rides", color = PureWhite) },
                     onClick = { menuExpanded = false; onShowHistory() }
                 )
                 DropdownMenuItem(

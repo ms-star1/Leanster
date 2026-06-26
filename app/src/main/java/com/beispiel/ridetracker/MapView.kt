@@ -4,12 +4,21 @@ package com.beispiel.ridetracker
 
 import android.location.Location
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -32,6 +41,7 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.annotations.PolylineOptions
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
@@ -381,132 +391,355 @@ fun AnalyticsMapContent(
     }
 }
 
+// ── Data helpers ─────────────────────────────────────────────────────────────
+
+data class CornerStat(val maxLean: Float, val speedAtApex: Double)
+
+private fun computeCornerStats(session: RideSession): List<CornerStat> =
+    session.corners.map { c ->
+        val lean = maxOf(abs(c.maxLeftLean), c.maxRightLean)
+        val speed = if (c.maxLeanIndex in session.points.indices) session.points[c.maxLeanIndex].speedKmh else 0.0
+        CornerStat(lean, speed)
+    }
+
+private fun interpolateStats(points: List<TelemetryPoint>, offsetMs: Long): Pair<Float, Double>? {
+    if (points.isEmpty()) return null
+    val t0 = points.first().timestamp
+    val target = t0 + offsetMs
+    if (target <= t0) return Pair(points.first().leanAngle, points.first().speedKmh)
+    if (target >= points.last().timestamp) return Pair(points.last().leanAngle, points.last().speedKmh)
+    var lo = 0; var hi = points.lastIndex
+    while (lo < hi - 1) { val mid = (lo + hi) / 2; if (points[mid].timestamp <= target) lo = mid else hi = mid }
+    val a = points[lo]; val b = points[hi]
+    val frac = if (b.timestamp == a.timestamp) 0.0 else (target - a.timestamp).toDouble() / (b.timestamp - a.timestamp)
+    return Pair((a.leanAngle + (b.leanAngle - a.leanAngle) * frac).toFloat(), a.speedKmh + (b.speedKmh - a.speedKmh) * frac)
+}
+
+private fun matchCornerStats(
+    currentCorners: List<CornerEvent>, currentStats: List<CornerStat>,
+    ghostCorners: List<CornerEvent>, ghostStats: List<CornerStat>
+): List<Pair<CornerStat?, CornerStat?>> = currentCorners.mapIndexed { i, cur ->
+    val ghostIdx = if (cur.centroidLat != 0.0 && ghostCorners.isNotEmpty()) {
+        ghostCorners.indices.minByOrNull { j ->
+            val g = ghostCorners[j]
+            val dl = cur.centroidLat - g.centroidLat; val dg = cur.centroidLng - g.centroidLng
+            dl * dl + dg * dg
+        } ?: i
+    } else i
+    Pair(currentStats.getOrNull(i), ghostStats.getOrNull(ghostIdx))
+}
+
+// ── Ghost Replay Screen ───────────────────────────────────────────────────────
+
 @Composable
 fun GhostReplayScreen(
     currentSession: RideSession,
     ghostSession: RideSession,
     highlightColor: Color,
-    mapView: MapView,
+    mapView: MapView,          // retained for API compat, not used in canvas mode
     onClose: () -> Unit
 ) {
-    var isPlaying by remember { mutableStateOf(false) }
-    var speedMultiplier by remember { mutableStateOf(1f) }
+    val curPts  = currentSession.points
+    val ghoPts  = ghostSession.points
+
+    var isPlaying  by remember { mutableStateOf(false) }
+    var speedMult  by remember { mutableStateOf(1f) }
     var progressMs by remember { mutableStateOf(0L) }
 
-    val currentPoints = currentSession.points
-    val ghostPoints = ghostSession.points
-    val currentDuration = (currentPoints.lastOrNull()?.timestamp ?: 0L) -
-            (currentPoints.firstOrNull()?.timestamp ?: 0L)
-    val ghostDuration = (ghostPoints.lastOrNull()?.timestamp ?: 0L) -
-            (ghostPoints.firstOrNull()?.timestamp ?: 0L)
-    val maxDuration = maxOf(currentDuration, ghostDuration).coerceAtLeast(1L)
+    val curDuration = remember(curPts)  { ((curPts.lastOrNull()?.timestamp  ?: 0L) - (curPts.firstOrNull()?.timestamp  ?: 0L)).coerceAtLeast(1L) }
+    val ghoDuration = remember(ghoPts) { ((ghoPts.lastOrNull()?.timestamp ?: 0L) - (ghoPts.firstOrNull()?.timestamp ?: 0L)).coerceAtLeast(1L) }
+    val maxDuration = maxOf(curDuration, ghoDuration)
 
-    var mapLibreRef by remember { mutableStateOf<MapLibreMap?>(null) }
-    val context = LocalContext.current
-
-    LaunchedEffect(isPlaying, speedMultiplier) {
+    LaunchedEffect(isPlaying, speedMult) {
         while (isPlaying) {
             delay(16L)
-            progressMs = (progressMs + (16L * speedMultiplier).toLong()).coerceAtMost(maxDuration)
+            progressMs = (progressMs + (16L * speedMult).toLong()).coerceAtMost(maxDuration)
             if (progressMs >= maxDuration) isPlaying = false
         }
     }
 
-    val currentPos = remember(progressMs) {
-        interpolatePosition(currentPoints, progressMs)
+    val curPos   = remember(progressMs) { interpolatePosition(curPts,  progressMs) }
+    val ghoPos   = remember(progressMs) { interpolatePosition(ghoPts, progressMs) }
+    val curStats = remember(progressMs) { interpolateStats(curPts,  progressMs) }
+    val ghoStats = remember(progressMs) { interpolateStats(ghoPts, progressMs) }
+
+    val curCornerStats = remember(currentSession) { computeCornerStats(currentSession) }
+    val ghoCornerStats = remember(ghostSession)   { computeCornerStats(ghostSession) }
+    val matched = remember(currentSession.corners, ghostSession.corners) {
+        matchCornerStats(currentSession.corners, curCornerStats, ghostSession.corners, ghoCornerStats)
     }
-    val ghostPos = remember(progressMs) {
-        interpolatePosition(ghostPoints, progressMs)
+
+    // GPS projection bounds
+    val allPts  = curPts + ghoPts
+    val minLat  = allPts.minOfOrNull { it.latitude  } ?: 0.0
+    val maxLat  = allPts.maxOfOrNull { it.latitude  } ?: 1.0
+    val minLng  = allPts.minOfOrNull { it.longitude } ?: 0.0
+    val maxLng  = allPts.maxOfOrNull { it.longitude } ?: 1.0
+    val latRange = (maxLat - minLat).coerceAtLeast(0.0001)
+    val lngRange = (maxLng - minLng).coerceAtLeast(0.0001)
+
+    val mapBg      = Color(0xFF070908)
+    val roadBg     = Color(0xFF1A2218)
+    val gridCol    = Color(0xFF111610)
+    val textMuted  = MutedGrey
+    val textMid    = MidGrey
+    val surfCol    = Color(0xFF1D211B)
+    val borderCol  = Color(0xFF2A3028)
+
+    fun fmtTime(ms: Long) = "%02d:%02d".format(ms / 60000, (ms % 60000) / 1000)
+
+    // distance delta badge
+    val distDelta = remember(progressMs) {
+        val curDist  = curPts.filter { it.timestamp - curPts.first().timestamp <= progressMs }.sumOf { it.distanceDelta }
+        val ghoDist = ghoPts.filter { it.timestamp - ghoPts.first().timestamp <= progressMs }.sumOf { it.distanceDelta }
+        curDist - ghoDist   // positive = you are ahead (covered more distance)
     }
 
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val dateLabel = remember(currentSession.startTime) {
+        java.text.SimpleDateFormat("dd MMM", java.util.Locale.getDefault()).format(java.util.Date(currentSession.startTime))
+    }
 
-    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
-        AndroidView(
-            factory = { mapView },
-            modifier = Modifier.fillMaxSize(),
-            update = { mv ->
-                mv.getMapAsync { map ->
-                    mapLibreRef = map
-                    if (map.style == null) {
-                        try {
-                            val styleJson = context.assets.open("style.json").bufferedReader().use { it.readText() }
-                            map.setStyle(Style.Builder().fromJson(styleJson))
-                        } catch (_: Exception) {}
-                    }
-                    map.clear()
-                    if (currentPoints.size >= 2) {
-                        map.addPolyline(PolylineOptions()
-                            .addAll(currentPoints.map { LatLng(it.latitude, it.longitude) })
-                            .color(highlightColor.toArgb()).width(5f))
-                    }
-                    if (ghostPoints.size >= 2) {
-                        map.addPolyline(PolylineOptions()
-                            .addAll(ghostPoints.map { LatLng(it.latitude, it.longitude) })
-                            .color(AlertRed.copy(alpha = 0.6f).toArgb()).width(4f))
-                    }
-                    currentPoints.firstOrNull()?.let { p ->
-                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(p.latitude, p.longitude), 14.0))
-                    }
-                }
-            }
-        )
+    Box(modifier = Modifier.fillMaxSize().background(mapBg)) {
+        Column(modifier = Modifier.fillMaxSize()) {
 
-        LaunchedEffect(currentPos, ghostPos) {
-            mapLibreRef?.let { map ->
-                currentPos?.let { map.animateCamera(CameraUpdateFactory.newLatLng(LatLng(it.first, it.second))) }
-            }
-        }
-
-        Column(
-            modifier = Modifier.align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(DeepCarbon.copy(alpha = 0.9f))
-                .padding(12.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(modifier = Modifier.size(12.dp).background(highlightColor, RoundedCornerShape(6.dp)))
-                Text("You", style = MaterialTheme.typography.labelSmall, color = PureWhite)
-                Spacer(Modifier.width(8.dp))
-                Box(modifier = Modifier.size(12.dp).background(AlertRed.copy(alpha = 0.8f), RoundedCornerShape(6.dp)))
-                Text("Ghost", style = MaterialTheme.typography.labelSmall, color = PureWhite)
-            }
-            Spacer(Modifier.height(8.dp))
-            androidx.compose.material3.Slider(
-                value = progressMs.toFloat() / maxDuration,
-                onValueChange = { progressMs = (it * maxDuration).toLong() },
-                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = highlightColor, activeTrackColor = highlightColor),
+            // ── Header ──
+            Row(
                 modifier = Modifier.fillMaxWidth()
-            )
-            Row(modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { isPlaying = !isPlaying }) {
-                    Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = null, tint = highlightColor)
+                    .padding(start = 4.dp, end = 16.dp, top = 10.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onClose, modifier = Modifier.size(44.dp)) {
+                    Text("←", color = textMuted, style = MaterialTheme.typography.titleMedium)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(1f, 2f, 5f).forEach { mult ->
-                        OutlinedButton(
-                            onClick = { speedMultiplier = mult },
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (speedMultiplier == mult) highlightColor.copy(alpha = 0.2f) else Color.Transparent
-                            ),
-                            border = BorderStroke(1.dp, if (speedMultiplier == mult) highlightColor else BorderDivider),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier.height(32.dp)
-                        ) {
-                            Text("${mult.toInt()}x", color = if (speedMultiplier == mult) highlightColor else MutedGrey,
-                                style = MaterialTheme.typography.labelSmall)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("GHOST REPLAY",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontFamily = Inter, fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+                        color = PureWhite)
+                    Text("$dateLabel · ${currentSession.corners.size} corners",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani),
+                        color = textMuted)
+                }
+            }
+
+            // ── Canvas map ──
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val pad  = 36.dp.toPx()
+                    val mapW = size.width  - pad * 2
+                    val mapH = size.height - pad * 2
+
+                    // Aspect-correct projection
+                    val latCorr  = cos(Math.toRadians((minLat + maxLat) / 2)).toFloat()
+                    val gpsAsp   = (lngRange * latCorr / latRange).toFloat()
+                    val scrAsp   = mapW / mapH
+                    val scX: Float; val scY: Float; val offX: Float; val offY: Float
+                    if (gpsAsp > scrAsp) {
+                        scX = mapW; scY = mapW / gpsAsp; offX = pad; offY = pad + (mapH - scY) / 2
+                    } else {
+                        scY = mapH; scX = mapH * gpsAsp; offY = pad; offX = pad + (mapW - scX) / 2
+                    }
+                    fun px(lng: Double) = (offX + ((lng - minLng) / lngRange * scX)).toFloat()
+                    fun py(lat: Double) = (offY + ((maxLat - lat) / latRange * scY)).toFloat()
+
+                    // Grid
+                    val gs = 44.dp.toPx()
+                    var gx = 0f; while (gx <= size.width)  { drawLine(gridCol, Offset(gx, 0f), Offset(gx, size.height), 0.5.dp.toPx()); gx += gs }
+                    var gy = 0f; while (gy <= size.height) { drawLine(gridCol, Offset(0f, gy), Offset(size.width, gy), 0.5.dp.toPx()); gy += gs }
+
+                    // Road base (thick dark stroke — ghost route)
+                    if (ghoPts.size >= 2) {
+                        val rp = Path(); ghoPts.forEachIndexed { i, p -> if (i == 0) rp.moveTo(px(p.longitude), py(p.latitude)) else rp.lineTo(px(p.longitude), py(p.latitude)) }
+                        drawPath(rp, roadBg, style = Stroke(20.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    }
+
+                    // Ghost trace (highlightColor)
+                    if (ghoPts.size >= 2) {
+                        val gp = Path(); ghoPts.forEachIndexed { i, p -> if (i == 0) gp.moveTo(px(p.longitude), py(p.latitude)) else gp.lineTo(px(p.longitude), py(p.latitude)) }
+                        drawPath(gp, highlightColor.copy(alpha = 0.9f), style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    }
+
+                    // Current (you) trace — white, low alpha
+                    if (curPts.size >= 2) {
+                        val cp = Path(); curPts.forEachIndexed { i, p -> if (i == 0) cp.moveTo(px(p.longitude), py(p.latitude)) else cp.lineTo(px(p.longitude), py(p.latitude)) }
+                        drawPath(cp, Color(0xFFEEF2EE).copy(alpha = 0.35f), style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    }
+
+                    // Corner markers (on ghost route)
+                    ghostSession.corners.forEachIndexed { i, c ->
+                        if (c.centroidLat != 0.0) {
+                            val cx = px(c.centroidLng); val cy = py(c.centroidLat)
+                            drawCircle(highlightColor.copy(alpha = 0.65f), 5.5.dp.toPx(), Offset(cx, cy), style = Stroke(1.5.dp.toPx()))
+                        }
+                    }
+
+                    // Start dot
+                    ghoPts.firstOrNull()?.let { drawCircle(Color(0xFF5E655D), 4.dp.toPx(), Offset(px(it.longitude), py(it.latitude))) }
+
+                    // Ghost dot (highlightColor, glowing)
+                    ghoPos?.let { (lat, lng) ->
+                        val cx = px(lng); val cy = py(lat)
+                        drawCircle(highlightColor.copy(alpha = 0.12f), 20.dp.toPx(), Offset(cx, cy))
+                        drawCircle(highlightColor.copy(alpha = 0.28f), 13.dp.toPx(), Offset(cx, cy))
+                        drawCircle(highlightColor,                      8.dp.toPx(),  Offset(cx, cy))
+                    }
+
+                    // You dot (white, subtle)
+                    curPos?.let { (lat, lng) ->
+                        val cx = px(lng); val cy = py(lat)
+                        drawCircle(Color(0xFFEEF2EE).copy(alpha = 0.18f), 14.dp.toPx(), Offset(cx, cy))
+                        drawCircle(Color(0xFFEEF2EE).copy(alpha = 0.60f),  7.dp.toPx(), Offset(cx, cy))
+                    }
+                }
+
+                // ── Delta badge ──
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) {
+                    Card(
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = mapBg.copy(alpha = 0.92f)),
+                        border = BorderStroke(1.dp, Color(0xFF2A4020))
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally) {
+                            val sign = if (distDelta >= 0) "+" else "−"
+                            val absD = abs(distDelta)
+                            val lbl  = if (absD >= 1000) "$sign${"%.2f".format(absD / 1000)}km" else "$sign${absD.toInt()}m"
+                            Text(lbl,
+                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold),
+                                color = if (distDelta >= 0) highlightColor else AlertRed)
+                            Text("AHEAD", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp), color = textMuted)
                         }
                     }
                 }
-                TextButton(onClick = onClose) {
-                    Text("Close", color = MutedGrey, style = MaterialTheme.typography.labelSmall)
+
+                // ── Live lean + speed overlay (bottom-left of map) ──
+                if (curStats != null && ghoStats != null) {
+                    Row(
+                        modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        LiveStatPill("G ${abs(ghoStats.first).toInt()}°  ${ghoStats.second.toInt()}", highlightColor, mapBg)
+                        LiveStatPill("Y ${abs(curStats.first).toInt()}°  ${curStats.second.toInt()}", textMid, mapBg)
+                    }
+                }
+            }
+
+            // ── Bottom panel ──
+            Column(
+                modifier = Modifier.fillMaxWidth().background(mapBg).padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Legend
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box(Modifier.size(20.dp, 2.5.dp).background(highlightColor, RoundedCornerShape(2.dp)))
+                        Text("GHOST", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.8.sp), color = textMid)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Box(Modifier.size(20.dp, 2.dp).background(Color(0xFFEEF2EE).copy(alpha = 0.35f), RoundedCornerShape(2.dp)))
+                        Text("YOU", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.8.sp), color = textMuted)
+                    }
+                }
+
+                // Corner splits (lean + speed per corner)
+                if (matched.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(matched.size) { i ->
+                            val (cSt, gSt) = matched[i]
+                            val better = (cSt?.maxLean ?: 0f) >= (gSt?.maxLean ?: 0f)
+                            val chipBg  = if (better) highlightColor.copy(alpha = 0.14f) else surfCol
+                            val chipBdr = if (better) highlightColor.copy(alpha = 0.45f) else borderCol
+                            Card(shape = RoundedCornerShape(8.dp),
+                                colors = CardDefaults.cardColors(containerColor = chipBg),
+                                border = BorderStroke(1.dp, chipBdr)
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text("T${i + 1}",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani, letterSpacing = 0.8.sp),
+                                        color = if (better) highlightColor else textMuted)
+                                    if (cSt != null && gSt != null) {
+                                        Text("${cSt.maxLean.toInt()}° / ${gSt.maxLean.toInt()}°",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani),
+                                            color = if (better) PureWhite else textMid)
+                                        Text("${cSt.speedAtApex.toInt()} · ${gSt.speedAtApex.toInt()}",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                            color = textMuted)
+                                    } else {
+                                        Text("—", style = MaterialTheme.typography.labelSmall, color = Color(0xFF3A4036))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Scrubber
+                Slider(
+                    value = if (maxDuration > 0) progressMs.toFloat() / maxDuration else 0f,
+                    onValueChange = { progressMs = (it * maxDuration).toLong(); isPlaying = false },
+                    colors = SliderDefaults.colors(
+                        thumbColor = highlightColor,
+                        activeTrackColor = highlightColor,
+                        inactiveTrackColor = surfCol
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(20.dp)
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(fmtTime(progressMs), style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani), color = textMuted)
+                    Text(fmtTime(maxDuration), style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani), color = textMuted)
+                }
+
+                // Controls
+                Row(modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Speed multiplier
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(1f, 2f, 5f).forEach { mult ->
+                            OutlinedButton(
+                                onClick = { speedMult = mult },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (speedMult == mult) highlightColor.copy(alpha = 0.18f) else Color.Transparent),
+                                border = BorderStroke(1.dp, if (speedMult == mult) highlightColor else borderCol),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("${mult.toInt()}×",
+                                    color = if (speedMult == mult) highlightColor else textMuted,
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+
+                    // Play / Pause
+                    Box(
+                        modifier = Modifier.size(44.dp).background(highlightColor, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        IconButton(onClick = { isPlaying = !isPlaying }) {
+                            Icon(
+                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = Color(0xFF070908),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LiveStatPill(text: String, color: Color, bg: Color) {
+    Box(modifier = Modifier
+        .background(bg.copy(alpha = 0.88f), RoundedCornerShape(6.dp))
+        .padding(horizontal = 8.dp, vertical = 4.dp)) {
+        Text(text, style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold), color = color)
     }
 }
 
