@@ -162,6 +162,8 @@ class MainActivity : ComponentActivity() {
 
         var hasPlayedStartupAnimation by rememberSaveable { mutableStateOf(value = false) }
         var showTopLevelCalibrationGuide by remember { mutableStateOf(false) }
+        var showDisclaimer by rememberSaveable { mutableStateOf(!prefs.getBoolean("disclaimer_accepted", false)) }
+        var showOnboardingCalibGuide by rememberSaveable { mutableStateOf(false) }
         val service = telemetryService
 
         val isRecording by (service?.isRecording?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(value = false) })
@@ -248,7 +250,8 @@ class MainActivity : ComponentActivity() {
                                 highlightColorName = highlightColorName,
                                 onColorChange = onColorChange,
                                 onToggleUnit = { isMetric = !isMetric },
-                                onBack = { currentTab = 0 }
+                                onBack = { currentTab = 0 },
+                                onShowHelp = { showTopLevelCalibrationGuide = true }
                             )
                         }
                         2 -> {
@@ -276,12 +279,10 @@ class MainActivity : ComponentActivity() {
                             val demoSession = remember { createDemoSession() }
                             val allSessionsWithDemo = remember(sessions) { listOf(demoSession) + sessions }
                             var selectedSession by remember { mutableStateOf<RideSession?>(null) }
-                            var ghostPair by remember { mutableStateOf<Pair<RideSession, RideSession>?>(null) }
                             var cornerSession by remember { mutableStateOf<RideSession?>(null) }
 
                             BackHandler(enabled = true) {
                                 when {
-                                    ghostPair != null -> ghostPair = null
                                     cornerSession != null -> cornerSession = null
                                     selectedSession != null -> selectedSession = null
                                     else -> currentTab = 0
@@ -318,9 +319,6 @@ class MainActivity : ComponentActivity() {
                                         highlightColor = highlightColor,
                                         onClose = { selectedSession = null },
                                         mapView = mapView,
-                                        onGhostReplay = { current, ghost ->
-                                            ghostPair = Pair(current, ghost)
-                                        },
                                         allSessions = allSessionsWithDemo,
                                         onDelete = { sessionId ->
                                             service.deleteSession(sessionId)
@@ -336,22 +334,11 @@ class MainActivity : ComponentActivity() {
                                 }
 
                                 cornerSession?.let { cs ->
-                                    CornerBreakdownScreen(
+                                    CornerMapScreen(
                                         session = cs,
                                         rideNumber = allSessionsWithDemo.indexOf(cs) + 1,
                                         highlightColor = highlightColor,
-                                        allSessions = allSessionsWithDemo,
                                         onClose = { cornerSession = null }
-                                    )
-                                }
-
-                                ghostPair?.let { (current, ghost) ->
-                                    GhostReplayScreen(
-                                        currentSession = current,
-                                        ghostSession = ghost,
-                                        highlightColor = highlightColor,
-                                        mapView = mapView,
-                                        onClose = { ghostPair = null }
                                     )
                                 }
                             }
@@ -384,10 +371,30 @@ class MainActivity : ComponentActivity() {
                             onDismiss = { showTopLevelCalibrationGuide = false }
                         )
                     }
+
+                    if (showOnboardingCalibGuide) {
+                        CalibrationGuideOverlay(
+                            service = service,
+                            highlightColor = highlightColor,
+                            onDismiss = { showOnboardingCalibGuide = false }
+                        )
+                    }
                 } else {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("Connecting to Telemetry Engine...", color = PureWhite)
                     }
+                }
+
+                // First-launch disclaimer — shown on top of everything, including loading state.
+                if (showDisclaimer) {
+                    DisclaimerScreen(
+                        highlightColor = highlightColor,
+                        onAccepted = {
+                            prefs.edit().putBoolean("disclaimer_accepted", true).apply()
+                            showDisclaimer = false
+                            showOnboardingCalibGuide = true
+                        }
+                    )
                 }
             }
         }

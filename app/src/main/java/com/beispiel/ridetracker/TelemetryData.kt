@@ -18,7 +18,8 @@ data class RideSession(
     val corners: List<CornerEvent> = emptyList(),
     val maxLeanLeft: Float = 0f,
     val maxLeanRight: Float = 0f,
-    val maxPitch: Float = 0f
+    val maxPitch: Float = 0f,
+    val stopReason: String? = null  // null = normal stop; non-null = error/auto-stop label
 )
 
 data class CornerEvent(

@@ -54,8 +54,11 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val currentHeading = MutableStateFlow(0f)
     val isRecording = MutableStateFlow(false)
     val isPaused = MutableStateFlow(false)
+    val isArmed = MutableStateFlow(false)
     val isWheelieAlert = MutableStateFlow(false)
     val isDevModeActive = MutableStateFlow(false)
+    val gpsUpdateRateHz = MutableStateFlow(0f)
+    val autoResumeOnLean = MutableStateFlow(false)
 
     // All-time records (persisted in SharedPreferences)
     val allTimeMaxLeft = MutableStateFlow(0f)
@@ -80,6 +83,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val calibrationAlert = MutableStateFlow<String?>(null)
     private var calibrationToneGen: ToneGenerator? = null
     private var calibrationWarmupUntil = 0L
+    private var lastDisplayRotation = Surface.ROTATION_0
 
     // Complementary Filter & Gyro variables
     private var lastTimestamp = 0L
@@ -108,6 +112,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val livePbComparison = MutableStateFlow<PbComparison?>(null)
     private lateinit var cornerMatchingEngine: CornerMatchingEngine
     private lateinit var voiceCoach: VoiceCoach
+    private lateinit var speedInterpolationEngine: SpeedInterpolationEngine
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // USB GPS configurations
@@ -142,10 +147,21 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         vibrationFiltering.value = prefs.getString("vibration_filtering", "Standard") ?: "Standard"
         forceFilterStandstill.value = prefs.getBoolean("force_filter_standstill", false)
         rollingDistanceTarget.value = prefs.getInt("rolling_distance_target", 1000)
-        
+        autoResumeOnLean.value = prefs.getBoolean("auto_resume_on_lean", false)
+
         val dao = AppDatabase.getInstance(this).cornerDao()
         cornerMatchingEngine = CornerMatchingEngine(dao)
         voiceCoach = VoiceCoach(this)
+
+        speedInterpolationEngine = SpeedInterpolationEngine(
+            sensorManager = sensorManager,
+            getMatrix = { rDeviceToBike },
+            onSpeedUpdate = { kmh ->
+                currentSpeed.value = kmh
+                if (isArmed.value && kmh >= 5.0) startRecording()
+            }
+        )
+        speedInterpolationEngine.start()
 
         loadSessions()
         startCalibrationWatchEngine()
@@ -210,12 +226,25 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
 
     private var currentSessionStartTime = 0L
 
+    /** Arms the session: waits for ≥5 km/h before actually starting the recording clock. */
+    fun armSession() {
+        if (isRecording.value && !isPaused.value) return
+        if (isPaused.value) { isPaused.value = false; return }
+        isArmed.value = true
+    }
+
+    fun disarmSession() {
+        isArmed.value = false
+    }
+
+    /** Starts (or resumes) recording immediately, bypassing the arm threshold. */
     fun startRecording() {
         if (isRecording.value && !isPaused.value) return
         if (isPaused.value) {
             isPaused.value = false
             return
         }
+        isArmed.value = false
         isRecording.value = true
         isPaused.value = false
         livePbComparison.value = null
@@ -249,7 +278,33 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         saveSessionLocally()
     }
 
+    /** Stops recording immediately and saves the session with a reason label. */
+    fun stopRecordingWithReason(reason: String) {
+        if (!isRecording.value) return
+        isRecording.value = false
+        isPaused.value = false
+        saveSessionLocally(stopReason = reason)
+        resetSessionStats()
+    }
+
     fun discardSession() {
+        isArmed.value = false
+        isPaused.value = false
+        isRecording.value = false
+        resetSessionStats()
+    }
+
+    fun discardAndRestartSession() {
+        isPaused.value = false
+        isRecording.value = false
+        resetSessionStats()
+        isArmed.value = true  // re-arm: wait for roll-off again
+    }
+
+    fun setAutoResumeOnLean(enabled: Boolean) {
+        autoResumeOnLean.value = enabled
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putBoolean("auto_resume_on_lean", enabled).apply()
     }
 
     fun deleteSession(sessionId: String) {
@@ -284,69 +339,119 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
 
     private fun startCalibrationWatchEngine() {
         serviceScope.launch {
-            // New monitoring loop: Check calibration status every 5 seconds if recording
+            // React to any calibration loss (true→false transition): stop or disarm the active session.
             launch {
-                while (isActive) {
-                    if (isRecording.value && !isCalibrated.value) {
-                        stopRecording()
-                        Log.d("TelemetryService", "Calibration lost during recording, stopping session.")
+                var wasCalibrated = false
+                isCalibrated.collect { calibrated ->
+                    val justLost = wasCalibrated && !calibrated
+                    wasCalibrated = calibrated
+                    if (justLost) {
+                        when {
+                            isArmed.value -> {
+                                isArmed.value = false
+                                Log.d("TelemetryService", "Calibration lost while armed — disarmed silently.")
+                            }
+                            isRecording.value -> {
+                                val duration = System.currentTimeMillis() - currentSessionStartTime
+                                if (duration > 10_000L) {
+                                    stopRecordingWithReason("Stopped — calibration error detected")
+                                    Log.d("TelemetryService", "Calibration lost during recording — session saved with reason.")
+                                } else {
+                                    discardSession()
+                                    Log.d("TelemetryService", "Calibration lost during recording (<10s) — session discarded.")
+                                }
+                            }
+                        }
                     }
-                    delay(5000L)
                 }
             }
 
-            var watchPrevLean = 0f
-            var watchPrevPitch = 0f
-            var sustainedHighLeanCount = 0
+            // Baseline tracks the phone's normal position; updated continuously during stable riding
+            // so it follows slow lean changes (cornering) but not sudden jumps.
+            var baselineLean = 0f
+            var baselinePitch = 0f
+            // Consecutive samples where reading stays far from baseline after a sudden step.
+            // A spike returns to baseline quickly (counter resets); a genuine mount move persists.
+            var leanShiftCount = 0
+            var pitchShiftCount = 0
+            val SHIFT_THRESHOLD = 35f   // °/sample to flag a potential mount move
+            val RETURN_THRESHOLD = 20f  // reading must settle within this of baseline to cancel (higher = fewer false resets during chaotic removal)
+            val CONFIRM_SAMPLES = 4     // ~480 ms of persistence required to confirm a real move
+
             delay(3000L) // let sensors settle on startup
+            baselineLean = currentLean.value
+            baselinePitch = currentPitch.value
+
             while (true) {
                 delay(120L) // ~8 Hz
                 val lean = currentLean.value
                 val pitch = currentPitch.value
 
-                if (!isCalibrated.value || calibrationAlert.value != null) {
-                    watchPrevLean = lean; watchPrevPitch = pitch
-                    sustainedHighLeanCount = 0
-                    continue
-                }
-                if (System.currentTimeMillis() < calibrationWarmupUntil) {
-                    watchPrevLean = lean; watchPrevPitch = pitch
-                    sustainedHighLeanCount = 0
+                if (!isCalibrated.value || calibrationAlert.value != null || System.currentTimeMillis() < calibrationWarmupUntil) {
+                    baselineLean = lean; baselinePitch = pitch
+                    leanShiftCount = 0; pitchShiftCount = 0
                     continue
                 }
 
-                val leanDelta = absF(lean - watchPrevLean)
-                val pitchDelta = absF(pitch - watchPrevPitch)
+                // Lean: detect step → confirm persistence → or cancel if value returns
+                if (leanShiftCount == 0) {
+                    if (absF(lean - baselineLean) > SHIFT_THRESHOLD) {
+                        leanShiftCount = 1
+                        Log.d("TelemetryService", "WatchEngine: lean step detected — lean=$lean baseline=$baselineLean delta=${absF(lean - baselineLean).toInt()}°")
+                    } else {
+                        baselineLean = lean
+                    }
+                } else {
+                    if (absF(lean - baselineLean) < RETURN_THRESHOLD) {
+                        Log.d("TelemetryService", "WatchEngine: lean step cancelled (spike) after $leanShiftCount samples")
+                        leanShiftCount = 0
+                        baselineLean = lean
+                    } else {
+                        leanShiftCount++
+                    }
+                }
 
-                // Count consecutive samples where lean stays above 55° (impossible sustained on a real bike)
-                if (absF(lean) > 55f) sustainedHighLeanCount++ else sustainedHighLeanCount = 0
+                // Pitch: same logic
+                if (pitchShiftCount == 0) {
+                    if (absF(pitch - baselinePitch) > SHIFT_THRESHOLD) {
+                        pitchShiftCount = 1
+                        Log.d("TelemetryService", "WatchEngine: pitch step detected — pitch=$pitch baseline=$baselinePitch delta=${absF(pitch - baselinePitch).toInt()}°")
+                    } else {
+                        baselinePitch = pitch
+                    }
+                } else {
+                    if (absF(pitch - baselinePitch) < RETURN_THRESHOLD) {
+                        Log.d("TelemetryService", "WatchEngine: pitch step cancelled (spike) after $pitchShiftCount samples")
+                        pitchShiftCount = 0
+                        baselinePitch = pitch
+                    } else {
+                        pitchShiftCount++
+                    }
+                }
 
                 val reason = when {
                     absF(lean) > 70f ->
                         "Extreme lean angle detected: ${lean.toInt()}°\nPhone may have slipped off the mount."
                     absF(pitch) > 75f ->
                         "Extreme pitch angle detected: ${pitch.toInt()}°\nPhone may have rotated on the mount."
-                    leanDelta > 35f ->
-                        "Sudden lean shift of ${leanDelta.toInt()}° detected.\nPhone may have moved on the mount."
-                    pitchDelta > 35f ->
-                        "Sudden pitch shift of ${pitchDelta.toInt()}° detected.\nPhone may have rotated on the mount."
-                    sustainedHighLeanCount > 41 ->
-                        "Lean held at ${lean.toInt()}° for 5+ seconds.\nPhone may have shifted on the mount."
+                    leanShiftCount >= CONFIRM_SAMPLES ->
+                        "Persistent lean shift of ${absF(lean - baselineLean).toInt()}° detected.\nPhone may have moved on the mount."
+                    pitchShiftCount >= CONFIRM_SAMPLES ->
+                        "Persistent pitch shift of ${absF(pitch - baselinePitch).toInt()}° detected.\nPhone may have rotated on the mount."
                     else -> null
                 }
 
                 if (reason != null) {
+                    Log.d("TelemetryService", "WatchEngine: calibration lost — $reason | lean=$lean pitch=$pitch baselineLean=$baselineLean baselinePitch=$baselinePitch")
                     isCalibrated.value = false
                     androidx.preference.PreferenceManager
                         .getDefaultSharedPreferences(this@TelemetryService)
                         .edit().putBoolean("isCalibrated", false).apply()
                     calibrationAlert.value = reason
                     triggerCalibrationAlertSound()
-                    sustainedHighLeanCount = 0
+                    leanShiftCount = 0; pitchShiftCount = 0
+                    // Session stop/disarm is handled reactively by the isCalibrated collector above.
                 }
-
-                watchPrevLean = lean
-                watchPrevPitch = pitch
             }
         }
     }
@@ -436,6 +541,13 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         return result
     }
 
+    private fun displayRotationMatrix(rotation: Int) = when (rotation) {
+        Surface.ROTATION_90  -> floatArrayOf( 0f,-1f, 0f,  1f, 0f, 0f,  0f, 0f, 1f)
+        Surface.ROTATION_180 -> floatArrayOf(-1f, 0f, 0f,  0f,-1f, 0f,  0f, 0f, 1f)
+        Surface.ROTATION_270 -> floatArrayOf( 0f, 1f, 0f, -1f, 0f, 0f,  0f, 0f, 1f)
+        else                 -> floatArrayOf( 1f, 0f, 0f,  0f, 1f, 0f,  0f, 0f, 1f)
+    }
+
     private fun multiplyMatrixVector(matrix: FloatArray, vector: FloatArray): FloatArray {
         return floatArrayOf(
             matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
@@ -457,6 +569,23 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             }
         } else {
             windowManager.defaultDisplay.rotation
+        }
+
+        if (displayRotation != lastDisplayRotation) {
+            val delta = multiply3x3(
+                transpose3x3(displayRotationMatrix(lastDisplayRotation)),
+                displayRotationMatrix(displayRotation)
+            )
+            rDeviceToBike = multiply3x3(rDeviceToBike, delta)
+            lastDisplayRotation = displayRotation
+            if (isCalibrated.value) {
+                isCalibrated.value = false
+                androidx.preference.PreferenceManager
+                    .getDefaultSharedPreferences(this)
+                    .edit().putBoolean("isCalibrated", false).apply()
+            }
+            calibrationWarmupUntil = System.currentTimeMillis() + 2500L
+            Log.d("TelemetryService", "Display rotation changed to $displayRotation — axes remapped, calibration cleared")
         }
 
         val speedKmh = currentSpeed.value
@@ -553,6 +682,11 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             currentPitch.value = finalPitch
             isWheelieAlert.value = finalPitch > WHEELIE_THRESHOLD
 
+            // Auto-resume when lean threshold reached while paused
+            if (isPaused.value && autoResumeOnLean.value && kotlin.math.abs(finalLean) >= 30f) {
+                startRecording()
+            }
+
             // 6. Update recording metrics and stats
             if (isRecording.value && !isPaused.value) {
                 if (finalLean < allTimeMaxLeft.value) allTimeMaxLeft.value = finalLean
@@ -633,6 +767,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             editor.apply()
             isCalibrated.value = true
             calibrationWarmupUntil = System.currentTimeMillis() + 2500L
+            speedInterpolationEngine.onCalibrationComplete()
         }
 
         // R_bike_to_world = R_device_to_world * R_device_to_bike^T
@@ -917,10 +1052,10 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         return decimal
     }
 
-    private fun saveSessionLocally() {
+    private fun saveSessionLocally(stopReason: String? = null) {
         val dir = getExternalFilesDir("sessions") ?: return
         if (!dir.exists()) dir.mkdirs()
-        
+
         val endTime = System.currentTimeMillis()
         val session = RideSession(
             id = "Session_${currentSessionStartTime}",
@@ -930,7 +1065,8 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             corners = detectedCorners.value,
             maxLeanLeft = sessionMaxLeft.value,
             maxLeanRight = sessionMaxRight.value,
-            maxPitch = sessionMaxPitch.value
+            maxPitch = sessionMaxPitch.value,
+            stopReason = stopReason
         )
 
         val filename = "${session.id}.json"
@@ -986,13 +1122,22 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         return file
     }
 
+    private val gpsTimestamps = ArrayDeque<Long>()
+
     override fun onLocationChanged(location: Location) {
         lastLocation = location
         currentLocation.value = location
-        currentSpeed.value = location.speed * 3.6 // m/s to km/h
+        val speedKmh = location.speed * 3.6
         if (location.hasBearing() && location.speed > 0.5f) {
             currentHeading.value = location.bearing
         }
+        // Feed GPS speed to interpolation engine — it updates currentSpeed and checks arm threshold
+        speedInterpolationEngine.onGpsFix(speedKmh)
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        gpsTimestamps.addLast(now)
+        while (gpsTimestamps.isNotEmpty() && now - gpsTimestamps.first() > 2000L) gpsTimestamps.removeFirst()
+        gpsUpdateRateHz.value = if (gpsTimestamps.size >= 2) gpsTimestamps.size / 2f else 0f
     }
 
     private fun startForegroundNotification() {
@@ -1022,6 +1167,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         voiceCoach.shutdown()
         calibrationToneGen?.release()
         calibrationToneGen = null
+        speedInterpolationEngine.stop()
         try { usbPort?.close() } catch (e: Exception) {}
         sensorManager.unregisterListener(this)
         try { locationManager.removeUpdates(this) } catch (e: Exception) {}

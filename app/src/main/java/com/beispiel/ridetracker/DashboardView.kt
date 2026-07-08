@@ -14,6 +14,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -187,8 +189,13 @@ fun DashboardView(
     val rollingDistanceTarget by service.rollingDistanceTarget.collectAsStateWithLifecycle()
     val isRecording by service.isRecording.collectAsStateWithLifecycle()
     val isPaused by service.isPaused.collectAsStateWithLifecycle()
+    val isArmed by service.isArmed.collectAsStateWithLifecycle()
+    val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
     val livePbComparison by service.livePbComparison.collectAsStateWithLifecycle()
     val isCalibrated by service.isCalibrated.collectAsStateWithLifecycle()
+
+    // Ride lock: all UI interaction blocked when recording at ≥10 km/h
+    val isRideLocked = isRecording && currentSpeed >= 10.0
 
     val context = LocalContext.current
 
@@ -232,30 +239,9 @@ fun DashboardView(
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
-    // Track calibration orientation
-    var calibratedOrientation by remember { mutableIntStateOf(configuration.orientation) }
-    LaunchedEffect(isCalibrated) {
-        if (isCalibrated) {
-            calibratedOrientation = configuration.orientation
-        }
-    }
-
-    LaunchedEffect(configuration.orientation, isCalibrated) {
-        if (isCalibrated && configuration.orientation != calibratedOrientation) {
-            isCalibrationPendingReset = true
-            delay(3000L)
-            if (configuration.orientation != calibratedOrientation) {
-                isCalibrationPendingReset = false
-                service.isCalibrated.value = false
-                android.widget.Toast.makeText(context, "Calibration reset due to rotation", android.widget.Toast.LENGTH_SHORT).show()
-            } else {
-                isCalibrationPendingReset = false
-            }
-        } else {
-            isCalibrationPendingReset = false
-        }
-    }
-
+    val rideLockScope = rememberCoroutineScope()
+    var rideLockTapCount by remember { mutableIntStateOf(0) }
+    var rideLockResetJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     Box(
         modifier = Modifier
@@ -275,6 +261,7 @@ fun DashboardView(
                 onShowSettings = onShowSettings,
                 isRecording = isRecording,
                 isPaused = isPaused,
+                isArmed = isArmed,
                 startAnimTriggered = startAnimTriggered,
                 hasPlayedStartupAnimation = hasPlayedStartupAnimation,
                 corners = corners,
@@ -289,7 +276,8 @@ fun DashboardView(
                 rollingDistanceTarget = rollingDistanceTarget,
                 onResetMaxLean = onResetMaxLean,
                 isCalibrationPendingReset = isCalibrationPendingReset,
-                flickerAlpha = flickerAlpha
+                flickerAlpha = flickerAlpha,
+                isRideLocked = isRideLocked
             )
         } else {
             DashboardPortraitLayout(
@@ -304,6 +292,7 @@ fun DashboardView(
                 onShowSettings = onShowSettings,
                 isRecording = isRecording,
                 isPaused = isPaused,
+                isArmed = isArmed,
                 startAnimTriggered = startAnimTriggered,
                 hasPlayedStartupAnimation = hasPlayedStartupAnimation,
                 corners = corners,
@@ -318,7 +307,8 @@ fun DashboardView(
                 rollingDistanceTarget = rollingDistanceTarget,
                 onResetMaxLean = onResetMaxLean,
                 isCalibrationPendingReset = isCalibrationPendingReset,
-                flickerAlpha = flickerAlpha
+                flickerAlpha = flickerAlpha,
+                isRideLocked = isRideLocked
             )
         }
 
@@ -327,6 +317,49 @@ fun DashboardView(
                 pb = pb,
                 highlightColor = highlightColor,
                 onDismiss = { service.livePbComparison.value = null }
+            )
+        }
+
+        // Ride lock overlay — intercepts all touch events when speed ≥ 10 km/h.
+        // Exceptions: 2 taps = pause/resume, 4 taps = discard + restart.
+        if (isRideLocked) {
+            var tapCount = 0
+            var lastTapMs = 0L
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(isRideLocked) {
+                        while (true) {
+                            awaitPointerEventScope {
+                                awaitFirstDown(requireUnconsumed = false).consume()
+                                var event = awaitPointerEvent()
+                                event.changes.forEach { it.consume() }
+                                while (event.changes.any { it.pressed }) {
+                                    event = awaitPointerEvent()
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
+                            val now = System.currentTimeMillis()
+                            if (now - lastTapMs > 700L) tapCount = 0
+                            tapCount++
+                            lastTapMs = now
+
+                            rideLockResetJob?.cancel()
+                            if (tapCount >= 4) {
+                                service.discardAndRestartSession()
+                                tapCount = 0
+                            } else {
+                                rideLockResetJob = rideLockScope.launch {
+                                    kotlinx.coroutines.delay(500L)
+                                    if (tapCount == 2) {
+                                        if (service.isPaused.value) service.startRecording()
+                                        else service.pauseRecording()
+                                    }
+                                    tapCount = 0
+                                }
+                            }
+                        }
+                    }
             )
         }
     }
@@ -395,12 +428,14 @@ fun SettingsScreen(
     highlightColorName: String,
     onColorChange: (String) -> Unit,
     onToggleUnit: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onShowHelp: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDevModeActive by service.isDevModeActive.collectAsStateWithLifecycle()
     val isUsbGpsConnected by service.isUsbGpsConnected.collectAsStateWithLifecycle()
     val forceFilter by service.forceFilterStandstill.collectAsStateWithLifecycle()
+    val autoResumeOnLean by service.autoResumeOnLean.collectAsStateWithLifecycle()
 
     var devModeClickCount by remember { mutableIntStateOf(0) }
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -512,6 +547,25 @@ fun SettingsScreen(
             Spacer(Modifier.height(4.dp))
             HorizontalDivider(color = BorderDivider)
 
+            // ── RIDE BEHAVIOUR ────────────────────────────────────────────
+            Text("RIDE BEHAVIOUR", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)
+                    .clickable { service.setAutoResumeOnLean(!autoResumeOnLean) }.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = autoResumeOnLean, onCheckedChange = { service.setAutoResumeOnLean(it) },
+                    colors = CheckboxDefaults.colors(checkedColor = highlightColor, uncheckedColor = MutedGrey))
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text("Auto-resume on lean ≥ 30°", color = PureWhite, fontSize = 14.sp)
+                    Text("Resumes a paused session when the bike leans past 30°", color = MutedGrey, fontSize = 11.sp)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider(color = BorderDivider)
+
             // ── DATA ──────────────────────────────────────────────────────
             Text("DATA", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
                 modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 12.dp))
@@ -519,6 +573,14 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Export all sessions as CSV", fontSize = 14.sp, color = PureWhite, modifier = Modifier.weight(1f))
+                Text("›", fontSize = 18.sp, color = MutedGrey)
+            }
+            HorizontalDivider(color = Color(0xFF111510), modifier = Modifier.padding(horizontal = 24.dp))
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 13.dp)
+                .clickable { onShowHelp() },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Help & Calibration Guide", fontSize = 14.sp, color = PureWhite, modifier = Modifier.weight(1f))
                 Text("›", fontSize = 18.sp, color = MutedGrey)
             }
             HorizontalDivider(color = Color(0xFF111510), modifier = Modifier.padding(horizontal = 24.dp))
@@ -869,7 +931,8 @@ fun CalibrationAlertOverlay(
 fun CalibrationGuideOverlay(
     service: TelemetryService,
     highlightColor: Color,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onCalibrationSuccess: (() -> Unit)? = null
 ) {
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentPitch by service.currentPitch.collectAsStateWithLifecycle()
@@ -887,7 +950,6 @@ fun CalibrationGuideOverlay(
 
     // Swipe drag state for step 0
     var swipeDrag by remember { mutableFloatStateOf(0f) }
-    val swipeThreshold = 180f
 
     Box(
         modifier = Modifier
@@ -916,63 +978,86 @@ fun CalibrationGuideOverlay(
                         fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp
                     )
 
-                    // Swipe-right card
-                    val swipeProgress = (swipeDrag / swipeThreshold).coerceIn(0f, 1f)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .background(Color(0xFF0E130D), RoundedCornerShape(12.dp))
-                            .border(BorderStroke(1.dp, if (swipeProgress > 0.5f) highlightColor.copy(0.6f) else BorderDivider), RoundedCornerShape(12.dp))
-                            .pointerInput(Unit) {
-                                detectHorizontalDragGestures(
-                                    onDragEnd = {
-                                        if (swipeDrag >= swipeThreshold) {
-                                            // Check mount stability
-                                            val leanAtStart = currentLean
-                                            val pitchAtStart = currentPitch
-                                            scope.launch {
-                                                delay(1500L)
-                                                val leanDelta = abs(currentLean - leanAtStart)
-                                                val pitchDelta = abs(currentPitch - pitchAtStart)
-                                                if (leanDelta > 6f || pitchDelta > 6f) {
-                                                    failReason = "Phone detected as moving.\nEnsure device is firmly mounted and try again."
-                                                    step = 4
-                                                } else {
-                                                    mountMode = if (isLandscape) "Landscape" else "Portrait"
-                                                    step = 1
-                                                }
-                                            }
-                                        } else {
-                                            swipeDrag = 0f
-                                        }
-                                    },
-                                    onDragCancel = { swipeDrag = 0f },
-                                    onHorizontalDrag = { _, dragAmount ->
-                                        swipeDrag = (swipeDrag + dragAmount).coerceAtLeast(0f)
-                                    }
-                                )
-                            },
-                        contentAlignment = Alignment.CenterStart
+                    // Swipe-right card — thumb physically follows the touch point
+                    BoxWithConstraints(
+                        modifier = Modifier.fillMaxWidth().height(56.dp)
                     ) {
+                        val density = LocalDensity.current
+                        val containerWidthPx = constraints.maxWidth.toFloat()
+                        val thumbWidthPx = with(density) { 44.dp.toPx() }
+                        val confirmThresholdPx = containerWidthPx - thumbWidthPx
+                        val thumbOffsetPx = swipeDrag.coerceIn(0f, confirmThresholdPx)
+                        val thumbOffsetDp = with(density) { thumbOffsetPx.toDp() }
+                        val swipeProgress = (swipeDrag / confirmThresholdPx).coerceIn(0f, 1f)
+
                         Box(
                             modifier = Modifier
-                                .fillMaxHeight()
-                                .fillMaxWidth(swipeProgress)
-                                .background(highlightColor.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .fillMaxSize()
+                                .background(Color(0xFF0E130D), RoundedCornerShape(12.dp))
+                                .border(BorderStroke(1.dp, if (swipeProgress > 0.5f) highlightColor.copy(0.6f) else BorderDivider), RoundedCornerShape(12.dp))
+                                .pointerInput(Unit) {
+                                    detectHorizontalDragGestures(
+                                        onDragEnd = {
+                                            if (swipeDrag >= confirmThresholdPx) {
+                                                val leanAtStart = currentLean
+                                                val pitchAtStart = currentPitch
+                                                scope.launch {
+                                                    delay(1500L)
+                                                    val leanDelta = abs(currentLean - leanAtStart)
+                                                    val pitchDelta = abs(currentPitch - pitchAtStart)
+                                                    if (leanDelta > 6f || pitchDelta > 6f) {
+                                                        failReason = "Phone detected as moving.\nEnsure device is firmly mounted and try again."
+                                                        step = 4
+                                                    } else {
+                                                        mountMode = if (isLandscape) "Landscape" else "Portrait"
+                                                        step = 1
+                                                    }
+                                                }
+                                            } else {
+                                                swipeDrag = 0f
+                                            }
+                                        },
+                                        onDragCancel = { swipeDrag = 0f },
+                                        onHorizontalDrag = { _, dragAmount ->
+                                            swipeDrag = (swipeDrag + dragAmount).coerceIn(0f, confirmThresholdPx)
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.CenterStart
                         ) {
+                            // Fill tracks the thumb
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(thumbOffsetDp + 22.dp)
+                                    .background(highlightColor.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                            )
+                            // Centered label fades in/out behind thumb
                             Text(
-                                if (swipeProgress > 0.8f) "Release to confirm" else "→  Swipe right to confirm",
+                                if (swipeProgress > 0.85f) "Release to confirm" else "Swipe right to confirm",
                                 fontSize = 13.sp,
                                 color = if (swipeProgress > 0.5f) highlightColor else MutedGrey,
-                                fontFamily = FontFamily.SansSerif
+                                fontFamily = FontFamily.SansSerif,
+                                modifier = Modifier.align(Alignment.Center)
                             )
-                            Text("→", fontSize = 18.sp, color = if (swipeProgress > 0.5f) highlightColor else MidGrey)
+                            // Thumb follows exact touch position
+                            Box(
+                                modifier = Modifier
+                                    .padding(vertical = 8.dp)
+                                    .offset(x = thumbOffsetDp)
+                                    .width(44.dp)
+                                    .fillMaxHeight()
+                                    .background(
+                                        if (swipeProgress > 0.5f) highlightColor else Color(0xFF2A3028),
+                                        RoundedCornerShape(8.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "→", fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                                    color = if (swipeProgress > 0.5f) Color(0xFF070908) else MidGrey
+                                )
+                            }
                         }
                     }
 
@@ -1076,23 +1161,31 @@ fun CalibrationGuideOverlay(
 
                 // ── Step 4: Success ───────────────────────────────────────
                 3 -> {
-                    Canvas(Modifier.size(56.dp)) {
-                        drawCircle(Color(0xFF6FD000).copy(0.15f))
-                        drawCircle(Color(0xFF6FD000), style = Stroke(2.dp.toPx()))
+                    Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+                        Canvas(Modifier.fillMaxSize()) {
+                            drawCircle(Color(0xFF6FD000).copy(0.15f))
+                            drawCircle(Color(0xFF6FD000), style = Stroke(2.dp.toPx()))
+                        }
+                        Text("✓", fontSize = 32.sp, color = Color(0xFF6FD000))
                     }
-                    Text("✓", fontSize = 32.sp, color = Color(0xFF6FD000), modifier = Modifier.offset(y = (-56).dp).padding(0.dp))
                     Text("Calibration Locked", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, textAlign = TextAlign.Center)
                     Text(
-                        "Sensor calibrated in $mountMode mode.\nYou're ready to ride.",
+                        if (onCalibrationSuccess != null)
+                            "Sensor calibrated in $mountMode mode.\nStarting your ride now…"
+                        else
+                            "Sensor calibrated in $mountMode mode.\nYou're ready to ride.",
                         fontSize = 13.sp, color = MidGrey, textAlign = TextAlign.Center, lineHeight = 20.sp
                     )
                     Button(
-                        onClick = onDismiss,
+                        onClick = { onDismiss(); onCalibrationSuccess?.invoke() },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6FD000)),
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.fillMaxWidth().height(48.dp)
                     ) {
-                        Text("DONE", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF070908), letterSpacing = 1.sp)
+                        Text(
+                            if (onCalibrationSuccess != null) "START RIDING" else "DONE",
+                            fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF070908), letterSpacing = 1.sp
+                        )
                     }
                 }
 
@@ -1289,6 +1382,7 @@ fun DashboardPortraitLayout(
     onShowSettings: () -> Unit,
     isRecording: Boolean,
     isPaused: Boolean,
+    isArmed: Boolean = false,
     startAnimTriggered: Boolean,
     hasPlayedStartupAnimation: Boolean,
     corners: List<CornerEvent>,
@@ -1303,7 +1397,8 @@ fun DashboardPortraitLayout(
     rollingDistanceTarget: Int,
     onResetMaxLean: () -> Unit = {},
     isCalibrationPendingReset: Boolean = false,
-    flickerAlpha: Float = 1f
+    flickerAlpha: Float = 1f,
+    isRideLocked: Boolean = false
 ) {
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
@@ -1338,6 +1433,7 @@ fun DashboardPortraitLayout(
     }
 
     val isCalibrated by service.isCalibrated.collectAsStateWithLifecycle()
+    val gpsUpdateRateHz by service.gpsUpdateRateHz.collectAsStateWithLifecycle()
     val gpsAccuracy = currentLocation?.accuracy ?: Float.MAX_VALUE
     val gpsActive = currentLocation != null
 
@@ -1391,6 +1487,7 @@ fun DashboardPortraitLayout(
     val activity = context as? AndroidActivity
     var showStopDialog by remember { mutableStateOf(false) }
     var showCalibrationGuide by remember { mutableStateOf(false) }
+    var startRideAfterCalibration by remember { mutableStateOf(false) }
     if (showStopDialog) {
         AlertDialog(
             onDismissRequest = { showStopDialog = false },
@@ -1414,7 +1511,7 @@ fun DashboardPortraitLayout(
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Canvas(Modifier.size(8.dp)) { drawCircle(if (gpsActive) highlightColor else MutedGrey) }
                         Text(
-                            text = if (gpsActive) "GPS 10Hz" else "GPS –",
+                            text = if (gpsActive) "GPS ${"%.0f".format(gpsUpdateRateHz)}Hz" else "GPS –",
                             fontSize = 12.sp, color = MutedGrey, fontFamily = Inter
                         )
                     }
@@ -1429,24 +1526,35 @@ fun DashboardPortraitLayout(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier
-                            .background(if (!isRecording) highlightColor.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(8.dp))
-                            .border(if (!isRecording) BorderStroke(1.dp, highlightColor) else BorderStroke(0.dp, Color.Transparent), RoundedCornerShape(8.dp))
+                            .background(if (!isRecording && !isArmed) highlightColor.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(8.dp))
+                            .border(if (!isRecording && !isArmed) BorderStroke(1.dp, highlightColor) else BorderStroke(0.dp, Color.Transparent), RoundedCornerShape(8.dp))
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                             .clickable {
                                 when {
-                                    !isCalibrated && !isRecording -> {
+                                    !isCalibrated && !isRecording && !isArmed -> {
+                                        startRideAfterCalibration = true
                                         showCalibrationGuide = true
                                     }
-                                    !isRecording || isPaused -> service.startRecording()
+                                    !isRecording && !isArmed -> service.armSession()
+                                    isPaused -> service.startRecording()
                                 }
                             }
                     ) {
                         Canvas(Modifier.size(8.dp)) {
-                            drawCircle(if (isRecording && !isPaused) highlightColor.copy(alpha = recAlpha) else if (isRecording) highlightColor.copy(alpha = 0.4f) else highlightColor)
+                            drawCircle(when {
+                                isRecording && !isPaused -> highlightColor.copy(alpha = recAlpha)
+                                isRecording -> highlightColor.copy(alpha = 0.4f)
+                                isArmed -> highlightColor.copy(alpha = recAlpha)
+                                else -> highlightColor
+                            })
                         }
                         Text(
-                            text = if (isRecording) timerText else "TAP TO START",
-                            fontSize = 15.sp,
+                            text = when {
+                                isRecording -> timerText
+                                isArmed -> "ARMED · Waiting for roll-off"
+                                else -> "TAP TO RIDE"
+                            },
+                            fontSize = if (isArmed) 13.sp else 15.sp,
                             color = if (isRecording) MidGrey else highlightColor,
                             fontFamily = Rajdhani, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp
                         )
@@ -1455,7 +1563,16 @@ fun DashboardPortraitLayout(
                         if (cityName.isNotEmpty()) {
                             Text(cityName, fontSize = 12.sp, color = MutedGrey, letterSpacing = 0.5.sp, fontFamily = Inter)
                         }
-                        if (isRecording) {
+                        if (isArmed) {
+                            // Cancel armed state — discard before session even starts
+                            Box(
+                                modifier = Modifier.size(28.dp)
+                                    .background(AlertRed.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                                    .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.5f)), RoundedCornerShape(4.dp))
+                                    .clickable { service.disarmSession() },
+                                contentAlignment = Alignment.Center
+                            ) { Text("■", fontSize = 10.sp, color = AlertRed) }
+                        } else if (isRecording) {
                             Box(
                                 modifier = Modifier.clickable {
                                     android.widget.Toast.makeText(activity, "Screen rotation is locked while a session is recording.", android.widget.Toast.LENGTH_SHORT).show()
@@ -1473,13 +1590,15 @@ fun DashboardPortraitLayout(
                                 }
                             }
                             Spacer(Modifier.width(8.dp))
+                            // Stop button: only active when speed < 10 km/h
+                            val stopEnabled = !isRideLocked
                             Box(
                                 modifier = Modifier.size(28.dp)
-                                    .background(AlertRed.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
-                                    .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.5f)), RoundedCornerShape(4.dp))
-                                    .clickable { showStopDialog = true },
+                                    .background(AlertRed.copy(alpha = if (stopEnabled) 0.12f else 0.04f), RoundedCornerShape(4.dp))
+                                    .border(BorderStroke(1.dp, AlertRed.copy(alpha = if (stopEnabled) 0.5f else 0.15f)), RoundedCornerShape(4.dp))
+                                    .clickable(enabled = stopEnabled) { showStopDialog = true },
                                 contentAlignment = Alignment.Center
-                            ) { Text("■", fontSize = 10.sp, color = AlertRed) }
+                            ) { Text("■", fontSize = 10.sp, color = AlertRed.copy(alpha = if (stopEnabled) 1f else 0.25f)) }
                         }
                     }
                 }
@@ -1605,12 +1724,13 @@ fun DashboardPortraitLayout(
             )
         }
 
-        // Calibration guide overlay (triggered from subtitle button or TAP TO START)
+        // Calibration guide overlay (triggered from subtitle button or TAP TO RIDE)
         if (showCalibrationGuide) {
             CalibrationGuideOverlay(
                 service = service,
                 highlightColor = highlightColor,
-                onDismiss = { showCalibrationGuide = false }
+                onDismiss = { showCalibrationGuide = false; startRideAfterCalibration = false },
+                onCalibrationSuccess = if (startRideAfterCalibration) {{ service.armSession() }} else null
             )
         }
     }
@@ -1630,6 +1750,7 @@ fun DashboardLandscapeLayout(
     onShowSettings: () -> Unit,
     isRecording: Boolean,
     isPaused: Boolean,
+    isArmed: Boolean = false,
     startAnimTriggered: Boolean,
     hasPlayedStartupAnimation: Boolean,
     corners: List<CornerEvent>,
@@ -1644,7 +1765,8 @@ fun DashboardLandscapeLayout(
     rollingDistanceTarget: Int,
     onResetMaxLean: () -> Unit = {},
     isCalibrationPendingReset: Boolean = false,
-    flickerAlpha: Float = 1f
+    flickerAlpha: Float = 1f,
+    isRideLocked: Boolean = false
 ) {
     val currentLean by service.currentLean.collectAsStateWithLifecycle()
     val currentSpeed by service.currentSpeed.collectAsStateWithLifecycle()
@@ -1652,6 +1774,7 @@ fun DashboardLandscapeLayout(
     val currentLocation by service.currentLocation.collectAsStateWithLifecycle()
     val pastSessions by service.pastSessions.collectAsStateWithLifecycle()
     val isCalibrated by service.isCalibrated.collectAsStateWithLifecycle()
+    val gpsUpdateRateHz by service.gpsUpdateRateHz.collectAsStateWithLifecycle()
     val gpsAccuracy = currentLocation?.accuracy ?: Float.MAX_VALUE
     val gpsActive = currentLocation != null
     val rideNumber = pastSessions.size + 1
@@ -1703,6 +1826,7 @@ fun DashboardLandscapeLayout(
     val activity = context as? AndroidActivity
     var showStopDialogL by remember { mutableStateOf(false) }
     var showCalibrationGuide by remember { mutableStateOf(false) }
+    var startRideAfterCalibrationL by remember { mutableStateOf(false) }
 
     if (showStopDialogL) {
         AlertDialog(
@@ -1742,7 +1866,7 @@ fun DashboardLandscapeLayout(
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Canvas(Modifier.size(7.dp)) { drawCircle(if (gpsActive) highlightColor else MutedGrey) }
-                        Text(if (gpsActive) "GPS 10Hz" else "GPS –", fontSize = 11.sp, color = MutedGrey, fontFamily = Inter)
+                        Text(if (gpsActive) "GPS ${"%.0f".format(gpsUpdateRateHz)}Hz" else "GPS –", fontSize = 11.sp, color = MutedGrey, fontFamily = Inter)
                         if (isRecording) {
                             Spacer(Modifier.width(6.dp))
                             Box(
@@ -1827,46 +1951,70 @@ fun DashboardLandscapeLayout(
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                         .clickable {
                             when {
-                                !isCalibrated && !isRecording -> {
+                                !isCalibrated && !isRecording && !isArmed -> {
+                                    startRideAfterCalibrationL = true
                                     showCalibrationGuide = true
                                 }
-                                !isRecording || isPaused -> service.startRecording()
+                                !isRecording && !isArmed -> service.armSession()
+                                isPaused -> service.startRecording()
                             }
                         }
                 ) {
                     Canvas(Modifier.size(8.dp)) {
-                        drawCircle(if (isRecording && !isPaused) highlightColor.copy(alpha = recAlpha) else if (isRecording) highlightColor.copy(alpha = 0.4f) else highlightColor)
+                        drawCircle(when {
+                            isRecording && !isPaused -> highlightColor.copy(alpha = recAlpha)
+                            isRecording -> highlightColor.copy(alpha = 0.4f)
+                            isArmed -> highlightColor.copy(alpha = recAlpha)
+                            else -> highlightColor
+                        })
                     }
                     Text(
-                        text = if (isRecording) timerText else "TAP TO START",
-                        fontSize = 15.sp,
+                        text = when {
+                            isRecording -> timerText
+                            isArmed -> "ARMED · Waiting for roll-off"
+                            else -> "TAP TO RIDE"
+                        },
+                        fontSize = if (isArmed) 13.sp else 15.sp,
                         color = if (isRecording) MidGrey else highlightColor,
                         fontFamily = Rajdhani, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp
                     )
                 }
 
-                if (isRecording || isPaused) {
+                if (isArmed) {
+                    // Cancel armed state before session begins
+                    Box(
+                        modifier = Modifier.size(34.dp)
+                            .background(AlertRed.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                            .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.5f)), RoundedCornerShape(8.dp))
+                            .clickable { service.disarmSession() },
+                        contentAlignment = Alignment.Center
+                    ) { Text("■", fontSize = 11.sp, color = AlertRed) }
+                } else if (isRecording || isPaused) {
+                    val stopEnabled = !isRideLocked
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(
-                            onClick = { if (isPaused) service.startRecording() else service.pauseRecording() },
-                            border = BorderStroke(1.dp, if (isRecording && !isPaused) highlightColor.copy(alpha = 0.5f) else BorderDivider),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isRecording && !isPaused) highlightColor else MutedGrey),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.height(34.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
-                        ) {
-                            Text(
-                                text = if (isRecording && !isPaused) "⏸  PAUSE" else "▶  RESUME",
-                                fontSize = 11.sp, letterSpacing = 0.8.sp, fontFamily = Inter
-                            )
+                        // Pause button: hidden while locked (the 2-tap gesture replaces it)
+                        if (!isRideLocked) {
+                            OutlinedButton(
+                                onClick = { if (isPaused) service.startRecording() else service.pauseRecording() },
+                                border = BorderStroke(1.dp, if (isRecording && !isPaused) highlightColor.copy(alpha = 0.5f) else BorderDivider),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isRecording && !isPaused) highlightColor else MutedGrey),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.height(34.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                            ) {
+                                Text(
+                                    text = if (isRecording && !isPaused) "⏸  PAUSE" else "▶  RESUME",
+                                    fontSize = 11.sp, letterSpacing = 0.8.sp, fontFamily = Inter
+                                )
+                            }
                         }
                         Box(
                             modifier = Modifier.size(34.dp)
-                                .background(AlertRed.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
-                                .border(BorderStroke(1.dp, AlertRed.copy(alpha = 0.5f)), RoundedCornerShape(8.dp))
-                                .clickable { showStopDialogL = true },
+                                .background(AlertRed.copy(alpha = if (stopEnabled) 0.1f else 0.03f), RoundedCornerShape(8.dp))
+                                .border(BorderStroke(1.dp, AlertRed.copy(alpha = if (stopEnabled) 0.5f else 0.15f)), RoundedCornerShape(8.dp))
+                                .clickable(enabled = stopEnabled) { showStopDialogL = true },
                             contentAlignment = Alignment.Center
-                        ) { Text("■", fontSize = 11.sp, color = AlertRed) }
+                        ) { Text("■", fontSize = 11.sp, color = AlertRed.copy(alpha = if (stopEnabled) 1f else 0.25f)) }
                     }
                 }
             }
@@ -1965,12 +2113,13 @@ fun DashboardLandscapeLayout(
         }
     }
 
-        // Calibration guide overlay (triggered from the NOT CALIBRATED button)
+        // Calibration guide overlay (triggered from the NOT CALIBRATED button or TAP TO RIDE)
         if (showCalibrationGuide) {
             CalibrationGuideOverlay(
                 service = service,
                 highlightColor = highlightColor,
-                onDismiss = { showCalibrationGuide = false }
+                onDismiss = { showCalibrationGuide = false; startRideAfterCalibrationL = false },
+                onCalibrationSuccess = if (startRideAfterCalibrationL) {{ service.armSession() }} else null
             )
         }
     }
