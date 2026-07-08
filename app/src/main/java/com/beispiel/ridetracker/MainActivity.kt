@@ -276,8 +276,11 @@ class MainActivity : ComponentActivity() {
                         }
                         3 -> {
                             val sessions by service.pastSessions.collectAsStateWithLifecycle()
+                            val showDemo by service.showDemoSession.collectAsStateWithLifecycle()
                             val demoSession = remember { createDemoSession() }
-                            val allSessionsWithDemo = remember(sessions) { listOf(demoSession) + sessions }
+                            val allSessionsWithDemo = remember(sessions, showDemo) {
+                                if (showDemo) listOf(demoSession) + sessions else sessions
+                            }
                             var selectedSession by remember { mutableStateOf<RideSession?>(null) }
                             var cornerSession by remember { mutableStateOf<RideSession?>(null) }
 
@@ -308,7 +311,8 @@ class MainActivity : ComponentActivity() {
                                     onExportAll = {
                                         service.exportAllSessionsToCsv()?.let { shareCsvFile(context, it) }
                                     },
-                                    onShowSettings = { currentTab = 1 }
+                                    onShowSettings = { currentTab = 1 },
+                                    showDemoSession = showDemo
                                 )
 
                                 if (selectedSession != null) {

@@ -46,6 +46,30 @@ import android.content.res.Configuration
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import android.content.Context
+import android.location.Geocoder
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** Reverse-geocodes a single GPS coordinate on an IO thread. Returns city, village, or county. */
+@Composable
+private fun rememberPlaceName(context: Context, lat: Double?, lng: Double?): String? {
+    if (lat == null || lng == null || !isValidGps(lat, lng)) return null
+    val state = produceState<String?>(null, lat, lng) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                if (!Geocoder.isPresent()) return@withContext null
+                @Suppress("DEPRECATION")
+                val addresses = Geocoder(context, java.util.Locale.getDefault()).getFromLocation(lat, lng, 1)
+                val addr = addresses?.firstOrNull() ?: return@withContext null
+                addr.locality ?: addr.subAdminArea ?: addr.adminArea
+            } catch (_: Exception) { null }
+        }
+    }
+    return state.value
+}
 
 @Composable
 fun HistoryMenuScreen(
@@ -57,7 +81,8 @@ fun HistoryMenuScreen(
     onExportAll: (() -> Unit)? = null,
     highlightColor: Color = NeonCyan,
     isMetric: Boolean = true,
-    onShowSettings: () -> Unit = {}
+    onShowSettings: () -> Unit = {},
+    showDemoSession: Boolean = true
 ) {
     val mutedHighlightColor = when (highlightColor) {
         YamahaBlue       -> MutedYamahaBlue
@@ -94,7 +119,9 @@ fun HistoryMenuScreen(
         )
     }
 
-    val allDisplaySessions = remember(sessions) { listOf(demoSession) + sessions }
+    val allDisplaySessions = remember(sessions, showDemoSession) {
+        if (showDemoSession) listOf(demoSession) + sessions else sessions
+    }
 
     // Group sessions by month/year
     val monthFmt = remember { java.text.SimpleDateFormat("MMM yyyy", java.util.Locale.getDefault()) }
@@ -213,35 +240,17 @@ private fun SessionHistoryRow(
     val distKm = session.points.sumOf { it.distanceDelta } / 1000.0
     val distStr = if (isMetric) "%.1f km".format(distKm) else "%.1f mi".format(distKm * 0.621371)
 
+    val context = LocalContext.current
+    val firstPt = session.points.firstOrNull { isValidGps(it.latitude, it.longitude) }
+    val lastPt  = session.points.lastOrNull  { isValidGps(it.latitude, it.longitude) }
+    val startPlace = rememberPlaceName(context, firstPt?.latitude, firstPt?.longitude)
+    val endPlace   = rememberPlaceName(context, lastPt?.latitude,  lastPt?.longitude)
+
     Row(
         modifier = Modifier.fillMaxWidth().background(if (isToday || isDemo) Color(0xFF0B150A) else Color.Transparent).clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Mini route thumbnail
-        Canvas(modifier = Modifier.size(width = 44.dp, height = 56.dp)) {
-            val pts = session.points
-            if (pts.size >= 2) {
-                val minLat = pts.minOf { it.latitude }; val maxLat = pts.maxOf { it.latitude }
-                val minLng = pts.minOf { it.longitude }; val maxLng = pts.maxOf { it.longitude }
-                val latR = (maxLat - minLat).coerceAtLeast(0.0001)
-                val lngR = (maxLng - minLng).coerceAtLeast(0.0001)
-                val latCorr = kotlin.math.cos(Math.toRadians((minLat + maxLat) / 2)).toFloat()
-                val gpsAsp = (lngR * latCorr / latR).toFloat()
-                val scrAsp = size.width / size.height
-                val scX: Float; val scY: Float; val ox: Float; val oy: Float
-                if (gpsAsp > scrAsp) { scX = size.width; scY = size.width / gpsAsp; ox = 0f; oy = (size.height - scY) / 2 }
-                else { scY = size.height; scX = size.height * gpsAsp; oy = 0f; ox = (size.width - scX) / 2 }
-                fun px(lng: Double) = (ox + ((lng - minLng) / lngR * scX)).toFloat()
-                fun py(lat: Double) = (oy + ((maxLat - lat) / latR * scY)).toFloat()
-                val path = androidx.compose.ui.graphics.Path()
-                pts.forEachIndexed { i, p -> if (i == 0) path.moveTo(px(p.longitude), py(p.latitude)) else path.lineTo(px(p.longitude), py(p.latitude)) }
-                drawPath(path, if (isToday || isDemo) highlightColor else Color(0xFF3A4036), style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
-            } else {
-                drawCircle(Color(0xFF2A3028), 10.dp.toPx(), Offset(size.width / 2, size.height / 2))
-            }
-        }
-
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -266,6 +275,19 @@ private fun SessionHistoryRow(
                 Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
                 Text("${abs(session.maxLeanLeft).toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (isToday || isDemo) PureWhite else PureWhite.copy(0.7f))
                 Text("L", fontSize = 10.sp, color = MutedGrey)
+            }
+            if (startPlace != null || endPlace != null) {
+                val samePlace = startPlace != null && startPlace == endPlace
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(startPlace ?: "—", fontSize = 11.sp, color = MutedGrey, maxLines = 1)
+                    if (!samePlace && endPlace != null) {
+                        Text("›", fontSize = 10.sp, color = Color(0xFF3A4036))
+                        Text(endPlace, fontSize = 11.sp, color = MutedGrey, maxLines = 1)
+                    }
+                }
             }
         }
 

@@ -59,6 +59,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val isDevModeActive = MutableStateFlow(false)
     val gpsUpdateRateHz = MutableStateFlow(0f)
     val autoResumeOnLean = MutableStateFlow(false)
+    val showDemoSession = MutableStateFlow(true)
 
     // All-time records (persisted in SharedPreferences)
     val allTimeMaxLeft = MutableStateFlow(0f)
@@ -108,6 +109,12 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     private var lastLocation: Location? = null
     private var lastLoggedLocation: Location? = null
 
+    // Corner detection quality filters
+    val minCornerPeakLean = MutableStateFlow(25f)  // user-configurable: 15 / 25 / 35 °
+    private var cdEntryCount = 0   // consecutive samples >= entry threshold
+    private var cdExitCount  = 0   // consecutive samples <  exit threshold
+    private var cdEntryTime  = 0L  // wall-clock ms when entry was confirmed
+
     // Per-corner PB system
     val livePbComparison = MutableStateFlow<PbComparison?>(null)
     private lateinit var cornerMatchingEngine: CornerMatchingEngine
@@ -148,6 +155,8 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         forceFilterStandstill.value = prefs.getBoolean("force_filter_standstill", false)
         rollingDistanceTarget.value = prefs.getInt("rolling_distance_target", 1000)
         autoResumeOnLean.value = prefs.getBoolean("auto_resume_on_lean", false)
+        showDemoSession.value  = prefs.getBoolean("show_demo_session", true)
+        minCornerPeakLean.value = prefs.getFloat("min_corner_peak_lean", 25f)
 
         val dao = AppDatabase.getInstance(this).cornerDao()
         cornerMatchingEngine = CornerMatchingEngine(dao)
@@ -305,6 +314,18 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         autoResumeOnLean.value = enabled
         androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
             .edit().putBoolean("auto_resume_on_lean", enabled).apply()
+    }
+
+    fun setShowDemoSession(show: Boolean) {
+        showDemoSession.value = show
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putBoolean("show_demo_session", show).apply()
+    }
+
+    fun setMinCornerPeakLean(degrees: Float) {
+        minCornerPeakLean.value = degrees
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putFloat("min_corner_peak_lean", degrees).apply()
     }
 
     fun deleteSession(sessionId: String) {
@@ -508,6 +529,9 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         resetRollingMaxLean()
         currentState = RideState.STRAIGHT
         activeCorner = null
+        cdEntryCount = 0
+        cdExitCount = 0
+        cdEntryTime = 0L
         lastLocation = null
         lastLoggedLocation = null
         currentSessionStartTime = 0L
@@ -845,10 +869,8 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     }
 
     private fun processTelemetrySnapshop(lean: Float, pitch: Float) {
-        val loc = lastLocation ?: Location("Fallback").apply {
-            latitude = 52.5200
-            longitude = 13.4050
-        }
+        val loc = lastLocation ?: return  // no GPS fix yet — don't save phantom points
+        if (loc.hasAccuracy() && loc.accuracy > 50f) return  // GPS accuracy too poor
         val currentTime = System.currentTimeMillis()
 
         val prevPoint = sessionPoints.value.lastOrNull()
@@ -893,24 +915,36 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         // Evaluate State Machine for Corners
         val absLean = kotlin.math.abs(lean)
         val currentIndex = updatedList.lastIndex
+        val aboveSpeedGate = currentSpeed.value >= 25.0
 
         when (currentState) {
             RideState.STRAIGHT -> {
-                if (absLean >= 10.0f) {
-                    currentState = RideState.IN_CORNER
-                    val newCorner = CornerEvent(
-                        id = detectedCorners.value.size + 1,
-                        startIndex = currentIndex,
-                        maxLeanIndex = currentIndex
-                    )
-                    if (lean < 0) newCorner.maxLeftLean = lean else newCorner.maxRightLean = lean
-                    activeCorner = newCorner
-                    detectedCorners.value = detectedCorners.value + newCorner
+                // Speed gate: suppress corner entry below 25 km/h
+                if (aboveSpeedGate && absLean >= 10.0f) {
+                    cdEntryCount++
+                    // Entry confirmation: require 3 consecutive samples above threshold
+                    if (cdEntryCount >= 3) {
+                        currentState = RideState.IN_CORNER
+                        cdEntryCount = 0
+                        cdExitCount = 0
+                        cdEntryTime = System.currentTimeMillis()
+                        val startIdx = (currentIndex - 2).coerceAtLeast(0)
+                        val newCorner = CornerEvent(
+                            id = detectedCorners.value.size + 1,
+                            startIndex = startIdx,
+                            maxLeanIndex = startIdx
+                        )
+                        if (lean < 0) newCorner.maxLeftLean = lean else newCorner.maxRightLean = lean
+                        activeCorner = newCorner
+                        detectedCorners.value = detectedCorners.value + newCorner
+                    }
+                } else {
+                    cdEntryCount = 0
                 }
             }
             RideState.IN_CORNER -> {
                 activeCorner?.let { corner ->
-                    // Track maximum thresholds
+                    // Track maximum lean
                     if (lean < 0 && lean < corner.maxLeftLean) {
                         corner.maxLeftLean = lean
                         corner.maxLeanIndex = currentIndex
@@ -919,51 +953,72 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
                         corner.maxLeanIndex = currentIndex
                     }
 
-                    // Exit threshold criteria
+                    // Exit debounce: require 3 consecutive samples below exit threshold
                     if (absLean < 7.0f) {
-                        corner.endIndex = currentIndex
-                        currentState = RideState.STRAIGHT
-                        activeCorner = null
-                        detectedCorners.value = detectedCorners.value.toList()
+                        cdExitCount++
+                        if (cdExitCount >= 3) {
+                            val peakLean = maxOf(kotlin.math.abs(corner.maxLeftLean), corner.maxRightLean)
+                            val duration = System.currentTimeMillis() - cdEntryTime
 
-                        if (isRecording.value && !isPaused.value) {
-                            val closedCorner = corner
-                            val pointsSnapshot = updatedList.toList()
-                            val sessionId = "Session_${currentSessionStartTime}"
-                            serviceScope.launch {
-                                val result = cornerMatchingEngine.matchOrCreateCorner(
-                                    closedCorner, pointsSnapshot, sessionId
-                                ) ?: return@launch
+                            val qualified = peakLean >= minCornerPeakLean.value && duration >= 1000L
 
-                                AppDatabase.getInstance(this@TelemetryService).cornerDao()
-                                    .insertSessionCorner(SessionCornerEntity(
-                                        sessionId = sessionId,
-                                        cornerId = result.corner.id,
-                                        leanAchieved = result.leanAchieved,
-                                        speedAtPeak = result.speedAtPeak,
-                                        cornerTimestamp = System.currentTimeMillis()
-                                    ))
+                            if (qualified) {
+                                corner.endIndex = currentIndex
+                                currentState = RideState.STRAIGHT
+                                activeCorner = null
+                                cdEntryCount = 0
+                                cdExitCount = 0
+                                detectedCorners.value = detectedCorners.value.toList()
 
-                                val comparison = PbComparison(
-                                    cornerId = result.corner.id,
-                                    pbLean = if (result.isNewPb) result.leanAchieved
-                                             else result.existingPb?.bestLean ?: result.leanAchieved,
-                                    achievedLean = result.leanAchieved,
-                                    isNewPb = result.isNewPb
-                                )
-                                livePbComparison.value = comparison
+                                if (isRecording.value && !isPaused.value) {
+                                    val closedCorner = corner
+                                    val pointsSnapshot = updatedList.toList()
+                                    val sessionId = "Session_${currentSessionStartTime}"
+                                    serviceScope.launch {
+                                        val result = cornerMatchingEngine.matchOrCreateCorner(
+                                            closedCorner, pointsSnapshot, sessionId
+                                        ) ?: return@launch
 
-                                if (result.isNewPb) {
-                                    voiceCoach.trigger(VoiceCoach.CoachEvent.NEW_PB, result.leanAchieved)
-                                } else {
-                                    val pb = result.existingPb
-                                    if (pb != null && result.leanAchieved >= pb.bestLean * 0.93f) {
-                                        voiceCoach.trigger(VoiceCoach.CoachEvent.NEAR_PB,
-                                            pb.bestLean - result.leanAchieved)
+                                        AppDatabase.getInstance(this@TelemetryService).cornerDao()
+                                            .insertSessionCorner(SessionCornerEntity(
+                                                sessionId = sessionId,
+                                                cornerId = result.corner.id,
+                                                leanAchieved = result.leanAchieved,
+                                                speedAtPeak = result.speedAtPeak,
+                                                cornerTimestamp = System.currentTimeMillis()
+                                            ))
+
+                                        val comparison = PbComparison(
+                                            cornerId = result.corner.id,
+                                            pbLean = if (result.isNewPb) result.leanAchieved
+                                                     else result.existingPb?.bestLean ?: result.leanAchieved,
+                                            achievedLean = result.leanAchieved,
+                                            isNewPb = result.isNewPb
+                                        )
+                                        livePbComparison.value = comparison
+
+                                        if (result.isNewPb) {
+                                            voiceCoach.trigger(VoiceCoach.CoachEvent.NEW_PB, result.leanAchieved)
+                                        } else {
+                                            val pb = result.existingPb
+                                            if (pb != null && result.leanAchieved >= pb.bestLean * 0.93f) {
+                                                voiceCoach.trigger(VoiceCoach.CoachEvent.NEAR_PB,
+                                                    pb.bestLean - result.leanAchieved)
+                                            }
+                                        }
                                     }
                                 }
+                            } else {
+                                // Discard: corner did not meet peak or duration requirements
+                                currentState = RideState.STRAIGHT
+                                activeCorner = null
+                                cdEntryCount = 0
+                                cdExitCount = 0
+                                detectedCorners.value = detectedCorners.value.dropLast(1)
                             }
                         }
+                    } else {
+                        cdExitCount = 0
                     }
                 }
             }

@@ -436,6 +436,8 @@ fun SettingsScreen(
     val isUsbGpsConnected by service.isUsbGpsConnected.collectAsStateWithLifecycle()
     val forceFilter by service.forceFilterStandstill.collectAsStateWithLifecycle()
     val autoResumeOnLean by service.autoResumeOnLean.collectAsStateWithLifecycle()
+    val showDemoSession by service.showDemoSession.collectAsStateWithLifecycle()
+    val minCornerPeak by service.minCornerPeakLean.collectAsStateWithLifecycle()
 
     var devModeClickCount by remember { mutableIntStateOf(0) }
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -561,6 +563,57 @@ fun SettingsScreen(
                 Column {
                     Text("Auto-resume on lean ≥ 30°", color = PureWhite, fontSize = 14.sp)
                     Text("Resumes a paused session when the bike leans past 30°", color = MutedGrey, fontSize = 11.sp)
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)
+                    .clickable { service.setShowDemoSession(!showDemoSession) }.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = showDemoSession, onCheckedChange = { service.setShowDemoSession(it) },
+                    colors = CheckboxDefaults.colors(checkedColor = highlightColor, uncheckedColor = MutedGrey))
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text("Show demo session", color = PureWhite, fontSize = 14.sp)
+                    Text("Display the Kesselberg demo ride in the session list", color = MutedGrey, fontSize = 11.sp)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider(color = BorderDivider)
+
+            // ── CORNER DETECTION ─────────────────────────────────────────
+            Text("CORNER DETECTION", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 4.dp))
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Minimum peak lean angle", fontSize = 14.sp, color = PureWhite)
+                Text("Corners that never reach this lean are ignored", fontSize = 11.sp, color = MutedGrey)
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .background(Color(0xFF111510), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(1.dp, BorderDivider), RoundedCornerShape(8.dp))
+                ) {
+                    listOf(15f, 25f, 35f).forEach { deg ->
+                        val selected = minCornerPeak == deg
+                        Box(
+                            modifier = Modifier.weight(1f)
+                                .background(
+                                    if (selected) highlightColor else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable { service.setMinCornerPeakLean(deg) }
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "${deg.toInt()}°",
+                                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp,
+                                fontFamily = Rajdhani,
+                                color = if (selected) DeepCarbon else MutedGrey
+                            )
+                        }
+                    }
                 }
             }
             Spacer(Modifier.height(4.dp))

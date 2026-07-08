@@ -30,8 +30,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.input.pointer.pointerInput
+import android.view.GestureDetector
+import android.view.MotionEvent
 import com.beispiel.ridetracker.ui.theme.*
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -57,6 +57,7 @@ data class Top20CornerItem(
     val lean: Float,
     val direction: String,
     val apexPoint: TelemetryPoint?,
+    val midpointPoint: TelemetryPoint?,
     val entrySpeed: Double,
     val exitSpeed: Double,
     val avgSpeed: Double
@@ -100,6 +101,8 @@ fun computeTop20Corners(session: RideSession): List<Top20CornerItem> {
         val endIdx = if (corner.endIndex >= 0 && corner.endIndex < session.points.size)
             corner.endIndex else corner.maxLeanIndex
         val exitPt = session.points.getOrNull(endIdx)
+        val midIdx = (corner.startIndex + endIdx) / 2
+        val midPt = session.points.getOrNull(midIdx)
         val cornerPts = if (corner.startIndex >= 0 && endIdx >= corner.startIndex && endIdx < session.points.size)
             session.points.subList(corner.startIndex, endIdx + 1)
         else emptyList()
@@ -112,12 +115,21 @@ fun computeTop20Corners(session: RideSession): List<Top20CornerItem> {
             lean = lean,
             direction = dir,
             apexPoint = apexPt,
+            midpointPoint = midPt,
             entrySpeed = entryPt?.speedKmh ?: 0.0,
             exitSpeed = exitPt?.speedKmh ?: 0.0,
             avgSpeed = avgSpd
         )
     }
 }
+
+/**
+ * Rejects zero-coords and exactly the dev-fallback used in old sessions (52.5200, 13.4050).
+ * Epsilon ~1 m — real Berlin GPS will never hit this exact coordinate.
+ */
+fun isValidGps(lat: Double, lng: Double) =
+    lat != 0.0 && lng != 0.0 &&
+    !(kotlin.math.abs(lat - 52.5200) < 0.00001 && kotlin.math.abs(lng - 13.4050) < 0.00001)
 
 private const val DEFAULT_CORNER_MAP_ZOOM = 18.0
 
@@ -130,13 +142,31 @@ private val SAT_STYLE = """
       "tiles": ["https://server.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
       "tileSize": 256,
       "maxzoom": 19
+    },
+    "labels": {
+      "type": "raster",
+      "tiles": [
+        "https://a.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+        "https://b.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+        "https://c.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+        "https://d.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png"
+      ],
+      "tileSize": 256,
+      "maxzoom": 18
     }
   },
-  "layers": [{
-    "id": "sat",
-    "type": "raster",
-    "source": "sat"
-  }]
+  "layers": [
+    {
+      "id": "sat",
+      "type": "raster",
+      "source": "sat"
+    },
+    {
+      "id": "labels",
+      "type": "raster",
+      "source": "labels"
+    }
+  ]
 }
 """.trimIndent()
 
@@ -170,10 +200,9 @@ fun CornerMapScreen(
     val cornerPositions: List<Offset?> = remember(cameraTickState.value, activeMapState.value) {
         val map = activeMapState.value ?: return@remember List<Offset?>(top20.size) { null }
         top20.map { item ->
-            val c = item.corner
-            val lat = if (c.centroidLat != 0.0) c.centroidLat else item.apexPoint?.latitude
-            val lng = if (c.centroidLng != 0.0) c.centroidLng else item.apexPoint?.longitude
-            if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+            val lat = item.midpointPoint?.latitude ?: item.apexPoint?.latitude
+            val lng = item.midpointPoint?.longitude ?: item.apexPoint?.longitude
+            if (lat != null && lng != null && isValidGps(lat, lng)) {
                 try {
                     val sp = map.projection.toScreenLocation(LatLng(lat, lng))
                     Offset(sp.x, sp.y)
@@ -181,6 +210,12 @@ fun CornerMapScreen(
             } else null
         }
     }
+
+    // Stable reference so the MapView GestureDetector (Android touch system) can
+    // always read the latest screen positions without capturing a recomposed value.
+    val latestCornerPositions = remember { mutableStateOf<List<Offset?>>(emptyList()) }
+    SideEffect { latestCornerPositions.value = cornerPositions }
+    val hitRadiusPx = with(density) { 28.dp.toPx() }
 
     // Text paint objects (remembered to avoid per-frame allocation)
     val labelTextSizePx = with(density) { 9.sp.toPx() }
@@ -205,10 +240,34 @@ fun CornerMapScreen(
 
     // Dedicated satellite MapView for this screen
     val mapView = remember {
-        // cameraMoveFromGesture lives inside remember so it persists across recompositions
-        // and is shared between the two callbacks without escaping to Compose state.
         var cameraMoveFromGesture = false
+        // GestureDetector runs in Android's touch system alongside MapLibre,
+        // so pan/pinch-zoom flow through normally — we only intercept confirmed taps.
+        val tapDetector = GestureDetector(context,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onSingleTapUp(e: MotionEvent): Boolean {
+                    val positions = latestCornerPositions.value
+                    val hitIdx = positions.indexOfFirst { cp ->
+                        cp != null && run {
+                            val dx = e.x - cp.x
+                            val dy = e.y - cp.y
+                            kotlin.math.sqrt(dx * dx + dy * dy) <= hitRadiusPx
+                        }
+                    }
+                    if (hitIdx >= 0) {
+                        selectedIdxState.value = hitIdx
+                        isExpandedState.value = false
+                        return true
+                    }
+                    return false
+                }
+            }
+        )
         MapView(context).apply {
+            setOnTouchListener { _, event ->
+                tapDetector.onTouchEvent(event)
+                false  // never consume — MapLibre handles all pan/zoom/drag
+            }
             onCreate(null)
             getMapAsync { map ->
                 activeMapState.value = map
@@ -216,10 +275,13 @@ fun CornerMapScreen(
                 map.uiSettings.isAttributionEnabled = false
                 map.setStyle(Style.Builder().fromJson(SAT_STYLE)) {
                     // Route polyline
-                    if (session.points.size >= 2) {
+                    val routePoints = session.points
+                        .filter { isValidGps(it.latitude, it.longitude) }
+                        .map { LatLng(it.latitude, it.longitude) }
+                    if (routePoints.size >= 2) {
                         map.addPolyline(
                             PolylineOptions()
-                                .addAll(session.points.map { LatLng(it.latitude, it.longitude) })
+                                .addAll(routePoints)
                                 .color(PureWhite.copy(alpha = 0.55f).toArgb())
                                 .width(2.5f)
                         )
@@ -227,15 +289,18 @@ fun CornerMapScreen(
                     // Center camera on first (time-sorted) top-20 corner
                     val first = top20.firstOrNull()
                     if (first != null) {
-                        val c = first.corner
-                        val lat = if (c.centroidLat != 0.0) c.centroidLat else first.apexPoint?.latitude
-                        val lng = if (c.centroidLng != 0.0) c.centroidLng else first.apexPoint?.longitude
+                        val lat = first.midpointPoint?.latitude ?: first.apexPoint?.latitude
+                        val lng = first.midpointPoint?.longitude ?: first.apexPoint?.longitude
                         if (lat != null && lat != 0.0 && lng != null && lng != 0.0) {
                             map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lng), DEFAULT_CORNER_MAP_ZOOM))
                         }
-                    } else if (session.points.isNotEmpty()) {
-                        val mid = session.points[session.points.size / 2]
-                        map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(mid.latitude, mid.longitude), 15.0))
+                    } else {
+                        val mid = session.points
+                            .filter { isValidGps(it.latitude, it.longitude) }
+                            .getOrNull(session.points.size / 2)
+                        if (mid != null) {
+                            map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(mid.latitude, mid.longitude), 15.0))
+                        }
                     }
                     cameraTickState.value++
                 }
@@ -260,9 +325,8 @@ fun CornerMapScreen(
     LaunchedEffect(selectedIdx, activeMapState.value) {
         val map = activeMapState.value ?: return@LaunchedEffect
         val item = top20.getOrNull(selectedIdx) ?: return@LaunchedEffect
-        val c = item.corner
-        val lat = if (c.centroidLat != 0.0) c.centroidLat else item.apexPoint?.latitude ?: return@LaunchedEffect
-        val lng = if (c.centroidLng != 0.0) c.centroidLng else item.apexPoint?.longitude ?: return@LaunchedEffect
+        val lat = item.midpointPoint?.latitude ?: item.apexPoint?.latitude ?: return@LaunchedEffect
+        val lng = item.midpointPoint?.longitude ?: item.apexPoint?.longitude ?: return@LaunchedEffect
         if (lat != 0.0 && lng != 0.0) {
             map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lng), currentZoomState.value))
         }
@@ -298,23 +362,8 @@ fun CornerMapScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // ── Corner marker overlay (draws markers + handles taps on them) ──
-        Canvas(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(cornerPositions) {
-                    val hitRadiusPx = 28.dp.toPx()
-                    detectTapGestures { tapOffset ->
-                        val hitIdx = cornerPositions.indexOfFirst { cp ->
-                            cp != null && (tapOffset - cp).getDistance() <= hitRadiusPx
-                        }
-                        if (hitIdx >= 0) {
-                            selectedIdxState.value = hitIdx
-                            isExpandedState.value = false
-                        }
-                    }
-                }
-        ) {
+        // ── Corner marker overlay — pure drawing, no pointer input ──
+        Canvas(modifier = Modifier.fillMaxSize()) {
             cornerPositions.forEachIndexed { i, pos ->
                 pos ?: return@forEachIndexed
                 val item = top20.getOrNull(i) ?: return@forEachIndexed
