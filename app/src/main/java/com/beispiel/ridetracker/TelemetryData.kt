@@ -19,7 +19,8 @@ data class RideSession(
     val maxLeanLeft: Float = 0f,
     val maxLeanRight: Float = 0f,
     val maxPitch: Float = 0f,
-    val stopReason: String? = null  // null = normal stop; non-null = error/auto-stop label
+    val stopReason: String? = null,  // null = normal stop; non-null = error/auto-stop label
+    var deletedAt: Long? = null      // null = active; non-null = epoch ms when moved to recycle bin
 )
 
 data class CornerEvent(

@@ -61,7 +61,7 @@ fun DisclaimerScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Please read this before using RideTracker",
+                    "Please read this before using Leanster",
                     fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
                     color = PureWhite, textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(), lineHeight = 26.sp
@@ -74,7 +74,7 @@ fun DisclaimerScreen(
                     number = "1",
                     title = "Measurement Accuracy",
                     highlightColor = highlightColor,
-                    body = "RideTracker estimates lean angle, pitch, and speed using your device's built-in sensors and GPS. " +
+                    body = "Leanster estimates lean angle, pitch, and speed using your device's built-in sensors and GPS. " +
                            "All values are approximations, subject to the quality and placement of the hardware and the accuracy " +
                            "of the calibration. This app does not produce certified measurements and must not be relied upon " +
                            "for engineering analysis, legal proceedings, insurance claims, or any purpose that requires " +
@@ -119,7 +119,7 @@ fun DisclaimerScreen(
                     title = "Responsible Riding",
                     highlightColor = highlightColor,
                     body = "This app and all parties involved in its development actively discourage unsafe or unlawful " +
-                           "riding on public roads. RideTracker is intended solely as a training and data analysis " +
+                           "riding on public roads. Leanster is intended solely as a training and data analysis " +
                            "tool for responsible use. Ride safely, ride within your limits, and respect others."
                 )
 

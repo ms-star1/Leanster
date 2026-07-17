@@ -81,7 +81,10 @@ fun HistoryMenuScreen(
     onExportAll: (() -> Unit)? = null,
     highlightColor: Color = NeonCyan,
     isMetric: Boolean = true,
+    is24Hour: Boolean = true,
     onShowSettings: () -> Unit = {},
+    onShowBin: () -> Unit = {},
+    trashCount: Int = 0,
     showDemoSession: Boolean = true
 ) {
     val mutedHighlightColor = when (highlightColor) {
@@ -129,7 +132,11 @@ fun HistoryMenuScreen(
     val grouped = remember(allDisplaySessions) {
         allDisplaySessions.groupBy { monthFmt.format(java.util.Date(it.startTime)).uppercase() }
     }
-    val sortedMonths = remember(grouped) { grouped.keys.sortedDescending() }
+    // Sort month groups chronologically (newest month on top), not by the formatted
+    // string — string order puts "JUN" above "JUL". Order by each group's newest session.
+    val sortedMonths = remember(grouped) {
+        grouped.entries.sortedByDescending { (_, monthSessions) -> monthSessions.maxOf { it.startTime } }.map { it.key }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -141,13 +148,26 @@ fun HistoryMenuScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("SESSIONS", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Inter)
-                Box(
-                    modifier = Modifier
-                        .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
-                        .clickable { onExportAll?.invoke() }
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
-                ) {
-                    Text("EXPORT ALL", fontSize = 12.sp, letterSpacing = 1.sp, color = highlightColor)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
+                            .clickable { onShowBin() }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text(
+                            text = if (trashCount > 0) "BIN ($trashCount)" else "BIN",
+                            fontSize = 12.sp, letterSpacing = 1.sp, color = MutedGrey
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
+                            .clickable { onExportAll?.invoke() }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text("EXPORT ALL", fontSize = 12.sp, letterSpacing = 1.sp, color = highlightColor)
+                    }
                 }
             }
             HorizontalDivider(color = BorderDivider)
@@ -171,12 +191,11 @@ fun HistoryMenuScreen(
                         item { HorizontalDivider(color = BorderDivider) }
                         items(monthSessions) { session ->
                             val isDemo = session.id == DEMO_SESSION_ID
-                            val globalIdx = allDisplaySessions.indexOf(session) + 1
                             SessionHistoryRow(
                                 session = session,
-                                rideIndex = globalIdx,
                                 isDemo = isDemo,
                                 isMetric = isMetric,
+                                is24Hour = is24Hour,
                                 highlightColor = highlightColor,
                                 onClick = { onSelectSession(session) },
                                 onDeleteRequest = { if (!isDemo) sessionToDelete = session.id }
@@ -219,19 +238,161 @@ private fun SessionNavItem(label: String, isActive: Boolean, highlightColor: Col
 }
 
 @Composable
+fun RecycleBinScreen(
+    trashed: List<RideSession>,
+    is24Hour: Boolean,
+    highlightColor: Color,
+    onBack: () -> Unit,
+    onRestore: (String) -> Unit,
+    onDeleteForever: (String) -> Unit,
+    onEmptyBin: () -> Unit
+) {
+    var confirmDeleteId by remember { mutableStateOf<String?>(null) }
+    var confirmEmpty by remember { mutableStateOf(false) }
+
+    if (confirmDeleteId != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteId = null },
+            containerColor = SurfaceCard,
+            title = { Text("Delete Forever?", style = MaterialTheme.typography.titleLarge) },
+            text = { Text("This ride will be permanently deleted and cannot be recovered.", style = MaterialTheme.typography.bodyLarge) },
+            confirmButton = {
+                TextButton(onClick = { onDeleteForever(confirmDeleteId!!); confirmDeleteId = null }) {
+                    Text("DELETE", color = AlertRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteId = null }) { Text("CANCEL", color = PureWhite) }
+            }
+        )
+    }
+    if (confirmEmpty) {
+        AlertDialog(
+            onDismissRequest = { confirmEmpty = false },
+            containerColor = SurfaceCard,
+            title = { Text("Empty Recycle Bin?", style = MaterialTheme.typography.titleLarge) },
+            text = { Text("All ${trashed.size} ride(s) in the bin will be permanently deleted.", style = MaterialTheme.typography.bodyLarge) },
+            confirmButton = {
+                TextButton(onClick = { onEmptyBin(); confirmEmpty = false }) {
+                    Text("EMPTY", color = AlertRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmEmpty = false }) { Text("CANCEL", color = PureWhite) }
+            }
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // ── Header ──
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("←", fontSize = 20.sp, color = MutedGrey, modifier = Modifier.clickable(onClick = onBack))
+                    Text("RECYCLE BIN", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Inter)
+                }
+                if (trashed.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
+                            .clickable { confirmEmpty = true }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) { Text("EMPTY", fontSize = 12.sp, letterSpacing = 1.sp, color = AlertRed) }
+                }
+            }
+            HorizontalDivider(color = BorderDivider)
+            Text(
+                "Deleted rides are kept for 30 days, then removed permanently.",
+                fontSize = 11.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+            )
+
+            if (trashed.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("Recycle bin is empty.", color = MutedGrey, fontSize = 14.sp)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(trashed) { session ->
+                        TrashSessionRow(
+                            session = session,
+                            is24Hour = is24Hour,
+                            highlightColor = highlightColor,
+                            onRestore = { onRestore(session.id) },
+                            onDeleteForever = { confirmDeleteId = session.id }
+                        )
+                        HorizontalDivider(color = Color(0xFF111510))
+                    }
+                    item { Spacer(Modifier.height(24.dp)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrashSessionRow(
+    session: RideSession,
+    is24Hour: Boolean,
+    highlightColor: Color,
+    onRestore: () -> Unit,
+    onDeleteForever: () -> Unit
+) {
+    val dateFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
+    val timeFmt = remember(is24Hour) { java.text.SimpleDateFormat(if (is24Hour) "HH:mm" else "h:mm a", java.util.Locale.getDefault()) }
+    val dateStr = dateFmt.format(java.util.Date(session.startTime))
+    val timeStr = timeFmt.format(java.util.Date(session.startTime))
+
+    val dayMs = 24L * 60 * 60 * 1000
+    val deletedAt = session.deletedAt ?: 0L
+    val daysLeft = (30L - (System.currentTimeMillis() - deletedAt) / dayMs).coerceIn(0L, 30L)
+
+    val context = LocalContext.current
+    val firstPt = session.points.firstOrNull { isValidGps(it.latitude, it.longitude) }
+    val startPlace = rememberPlaceName(context, firstPt?.latitude, firstPt?.longitude)
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = if (startPlace != null) "$startPlace · $dateStr · $timeStr" else "$dateStr · $timeStr",
+                fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, maxLines = 1
+            )
+            Text(
+                text = if (daysLeft <= 0L) "Deletes today" else "$daysLeft day${if (daysLeft == 1L) "" else "s"} left",
+                fontSize = 11.sp, color = MutedGrey, fontFamily = FontFamily.Monospace
+            )
+        }
+        Text("RESTORE", fontSize = 12.sp, letterSpacing = 0.6.sp, fontWeight = FontWeight.SemiBold,
+            color = highlightColor, modifier = Modifier.clickable(onClick = onRestore))
+        Text("DELETE", fontSize = 12.sp, letterSpacing = 0.6.sp, fontWeight = FontWeight.SemiBold,
+            color = AlertRed, modifier = Modifier.clickable(onClick = onDeleteForever))
+    }
+}
+
+@Composable
 private fun SessionHistoryRow(
     session: RideSession,
-    rideIndex: Int,
     isDemo: Boolean,
     isMetric: Boolean,
+    is24Hour: Boolean,
     highlightColor: Color,
     onClick: () -> Unit,
     onDeleteRequest: () -> Unit
 ) {
     val dateFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
     val todayFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
+    val timeFmt = remember(is24Hour) { java.text.SimpleDateFormat(if (is24Hour) "HH:mm" else "h:mm a", java.util.Locale.getDefault()) }
     val today = todayFmt.format(java.util.Date())
     val dateStr = dateFmt.format(java.util.Date(session.startTime))
+    val timeStr = timeFmt.format(java.util.Date(session.startTime))
     val isToday = dateStr == today
 
     val durMs = if (session.endTime > session.startTime) session.endTime - session.startTime else 0L
@@ -242,9 +403,7 @@ private fun SessionHistoryRow(
 
     val context = LocalContext.current
     val firstPt = session.points.firstOrNull { isValidGps(it.latitude, it.longitude) }
-    val lastPt  = session.points.lastOrNull  { isValidGps(it.latitude, it.longitude) }
     val startPlace = rememberPlaceName(context, firstPt?.latitude, firstPt?.longitude)
-    val endPlace   = rememberPlaceName(context, lastPt?.latitude,  lastPt?.longitude)
 
     Row(
         modifier = Modifier.fillMaxWidth().background(if (isToday || isDemo) Color(0xFF0B150A) else Color.Transparent).clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
@@ -252,16 +411,25 @@ private fun SessionHistoryRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = if (isDemo) "DEMO" else "#$rideIndex",
+                    text = if (isDemo) "DEMO" else (startPlace ?: "—"),
                     fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-                    color = if (isToday || isDemo) highlightColor else PureWhite
+                    color = if (isToday || isDemo) highlightColor else PureWhite,
+                    maxLines = 1
                 )
+                Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
                 Text(
                     text = if (isToday) "Today" else dateStr,
                     fontSize = 12.sp,
                     color = if (isToday) highlightColor else MutedGrey,
+                    letterSpacing = 0.4.sp
+                )
+                Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
+                Text(
+                    text = timeStr,
+                    fontSize = 12.sp,
+                    color = MutedGrey,
                     letterSpacing = 0.4.sp
                 )
             }
@@ -275,19 +443,6 @@ private fun SessionHistoryRow(
                 Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
                 Text("${abs(session.maxLeanLeft).toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (isToday || isDemo) PureWhite else PureWhite.copy(0.7f))
                 Text("L", fontSize = 10.sp, color = MutedGrey)
-            }
-            if (startPlace != null || endPlace != null) {
-                val samePlace = startPlace != null && startPlace == endPlace
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(startPlace ?: "—", fontSize = 11.sp, color = MutedGrey, maxLines = 1)
-                    if (!samePlace && endPlace != null) {
-                        Text("›", fontSize = 10.sp, color = Color(0xFF3A4036))
-                        Text(endPlace, fontSize = 11.sp, color = MutedGrey, maxLines = 1)
-                    }
-                }
             }
         }
 
@@ -437,18 +592,23 @@ fun SessionSummaryOverlay(
     isMetric: Boolean,
     onClose: () -> Unit,
     highlightColor: Color = NeonCyan,
+    is24Hour: Boolean = true,
     mapView: org.maplibre.android.maps.MapView? = null,
     allSessions: List<RideSession> = emptyList(),
     onDelete: ((String) -> Unit)? = null,
-    rideNumber: Int = 0,
     onShowCorners: ((RideSession) -> Unit)? = null,
     onExportCsv: ((RideSession) -> Unit)? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val dateFormat = remember { java.text.SimpleDateFormat("MMM d, yyyy", java.util.Locale.getDefault()) }
-    val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
+    val timeFormat = remember(is24Hour) { java.text.SimpleDateFormat(if (is24Hour) "HH:mm" else "h:mm a", java.util.Locale.getDefault()) }
     val dateStr = dateFormat.format(java.util.Date(session.startTime))
     val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
+    val hasEndTime = session.endTime > session.startTime
+    val endTimeStr = if (hasEndTime) timeFormat.format(java.util.Date(session.endTime)) else null
+
+    val firstPt = session.points.firstOrNull { isValidGps(it.latitude, it.longitude) }
+    val startPlace = rememberPlaceName(context, firstPt?.latitude, firstPt?.longitude)
 
     val totalDistanceRaw = session.points.sumOf { it.distanceDelta } / 1000.0
     val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
@@ -486,15 +646,9 @@ fun SessionSummaryOverlay(
             // ── Status row ──
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp, top = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End
             ) {
-                Text(startTimeStr, fontSize = 12.sp, color = MutedGrey)
-                Spacer(Modifier.weight(1f))
-                if (rideNumber > 0) {
-                    Text("RIDE #$rideNumber", fontSize = 12.sp, color = MutedGrey,
-                        fontFamily = FontFamily.Monospace, letterSpacing = 0.6.sp)
-                }
-                Spacer(Modifier.width(8.dp))
                 IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
                     Text("✕", color = MutedGrey, fontSize = 18.sp)
                 }
@@ -503,8 +657,16 @@ fun SessionSummaryOverlay(
             // ── Title ──
             Column(modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 6.dp)) {
                 Text("RIDE DETAILS", fontSize = 11.sp, letterSpacing = 4.sp, color = MutedGrey, fontFamily = Inter)
-                Text(dateStr, fontSize = 32.sp, fontWeight = FontWeight.SemiBold, color = PureWhite,
-                    letterSpacing = (-0.2).sp, modifier = Modifier.padding(top = 4.dp))
+                Text(
+                    text = if (startPlace != null) "$startPlace · $dateStr" else dateStr,
+                    fontSize = 32.sp, fontWeight = FontWeight.SemiBold, color = PureWhite,
+                    letterSpacing = (-0.2).sp, modifier = Modifier.padding(top = 4.dp)
+                )
+                Text(
+                    text = if (endTimeStr != null) "$startTimeStr – $endTimeStr" else startTimeStr,
+                    fontSize = 13.sp, color = MutedGrey, fontFamily = FontFamily.Monospace,
+                    letterSpacing = 0.6.sp, modifier = Modifier.padding(top = 4.dp)
+                )
             }
 
             // ── Calibration error banner ──
@@ -1588,7 +1750,7 @@ fun SessionSummaryPortraitPreview() {
             distanceDelta = 10.0
         )
     }
-    RideTrackerTheme {
+    LeansterTheme {
         Box(modifier = Modifier.fillMaxSize().background(DeepBase)) {
             SessionSummaryScreen(mockPoints, emptyList(), true, {}, {})
         }
@@ -1609,7 +1771,7 @@ fun SessionSummaryLandscapePreview() {
             distanceDelta = 10.0
         )
     }
-    RideTrackerTheme {
+    LeansterTheme {
         Box(modifier = Modifier.fillMaxSize().background(DeepBase)) {
             SessionSummaryScreen(mockPoints, emptyList(), true, {}, {})
         }
@@ -1631,7 +1793,7 @@ fun HistoryMenuLandscapePreview() {
             maxPitch = 15f
         )
     }
-    RideTrackerTheme {
+    LeansterTheme {
         HistoryMenuScreen(
             sessions = mockSessions,
             onBack = {},

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="index, follow">
+<title>Privacy Policy — Leanster</title>
+<meta name="description" content="Privacy policy for the Leanster motorcycle telemetry app. Ride data stays on your device — no accounts, analytics, ads, or backend.">
+<style>
+  :root {
+    --bg: #0B0E14;
+    --surface: #141A24;
+    --accent: #00F5D4;
+    --text: #E6EDF3;
+    --muted: #8B98A9;
+    --border: #232B38;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.65;
+    font-size: 17px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 48px 22px 96px; }
+  header { border-bottom: 1px solid var(--border); padding-bottom: 24px; margin-bottom: 32px; }
+  .brand {
+    display: inline-block;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-size: 14px;
+    color: var(--accent);
+  }
+  h1 { font-size: 30px; margin: 12px 0 6px; line-height: 1.25; }
+  h2 {
+    font-size: 21px;
+    margin: 40px 0 12px;
+    padding-top: 8px;
+    color: #fff;
+  }
+  .meta { color: var(--muted); font-size: 14px; margin: 0; }
+  .summary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin: 28px 0;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover, a:focus { text-decoration: underline; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0;
+    font-size: 15px;
+  }
+  th, td {
+    text-align: left;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: var(--surface); color: #fff; font-weight: 600; }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  code {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-size: 14px;
+  }
+  footer {
+    margin-top: 56px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 14px;
+  }
+  @media (max-width: 520px) {
+    body { font-size: 16px; }
+    h1 { font-size: 25px; }
+    table { font-size: 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="brand">Leanster</span>
+    <h1>Privacy Policy</h1>
+    <p class="meta">Effective date: 18 July 2026 · App package <code>com.ridetracker.ride</code></p>
+  </header>
+
+  <div class="summary">
+    <strong>Summary.</strong> Leanster is a motorcycle riding-telemetry app. It measures lean angle,
+    pitch, speed and location so you can review your rides. <strong>Your ride data stays on your device.</strong>
+    Leanster has no user accounts, runs no analytics or advertising, contains no crash-reporting SDK,
+    and operates no server that receives your data. Data only leaves your device when <em>you</em> choose
+    to share it, or through the standard map and geocoding services described below.
+  </div>
+
+  <h2>Information the app processes</h2>
+  <table>
+    <thead>
+      <tr><th>Data</th><th>Why</th><th>Where it goes</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Precise location (GPS / connected GPS module)</td>
+        <td>Track your route, speed, distance, and corner geometry during a ride.</td>
+        <td>Stored only on your device. Sent to the map and geocoding services below only as needed to draw maps and show place names.</td>
+      </tr>
+      <tr>
+        <td>Motion &amp; orientation sensors (accelerometer, gyroscope, rotation vector)</td>
+        <td>Estimate lean and pitch angle.</td>
+        <td>Stored only on your device. Never transmitted.</td>
+      </tr>
+      <tr>
+        <td>Ride sessions (timestamps, coordinates, speed, lean/pitch, corner events)</td>
+        <td>Let you review and compare past rides.</td>
+        <td>Stored only on your device as local files and an on-device database.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Leanster does <strong>not</strong> collect your name, email, contacts, phone identifiers, or advertising ID.</p>
+
+  <h2>Where your data is stored</h2>
+  <p>All ride data is stored in the app's private storage on your device (local files and a local database).
+  Uninstalling the app removes this data. If your device has automatic app backup enabled, this local data may
+  be included in your own device/cloud backup controlled by your Android settings.</p>
+
+  <h2>When data leaves your device</h2>
+  <p>Leanster itself does not upload your data to any server we operate. Data may reach third parties only in these situations:</p>
+  <ul>
+    <li><strong>Map display.</strong> When a map is shown, map tiles are requested from
+      <a href="https://www.esri.com/en-us/privacy/overview" rel="noopener">Esri ArcGIS Online</a> and
+      <a href="https://carto.com/privacy/" rel="noopener">CartoDB (CARTO)</a>. These requests reveal the
+      geographic area being displayed.</li>
+    <li><strong>Place names.</strong> To label a ride with a city/place, Leanster uses Android's built-in
+      geocoding service. On most devices this is provided by the operating system / Google Play services,
+      so the coordinate being looked up is handled by that system provider under
+      <a href="https://policies.google.com/privacy" rel="noopener">Google's privacy policy</a>.</li>
+    <li><strong>Sharing you initiate.</strong> If you export a ride as CSV or share a ride card image,
+      the file is sent only to the app or contact <em>you</em> select via the Android share sheet.</li>
+    <li><strong>Donation links.</strong> Optional "support" buttons open Ko-fi or PayPal in your browser.
+      Those sites have their own privacy policies.</li>
+  </ul>
+
+  <h2>Data sharing and sale</h2>
+  <p>We do <strong>not</strong> sell your personal data and do <strong>not</strong> share it with third parties
+  for advertising or analytics.</p>
+
+  <h2>Permissions and why they are used</h2>
+  <ul>
+    <li><strong>Location (fine/coarse)</strong> — record ride route, speed, and corners; foreground-service location while recording.</li>
+    <li><strong>Foreground service (location, data sync)</strong> — keep recording reliably while the screen is off or the app is in the background.</li>
+    <li><strong>Notifications</strong> — show the ongoing "recording" notification required for the foreground service.</li>
+    <li><strong>Internet / network state</strong> — download map tiles and perform place-name lookups.</li>
+    <li><strong>USB host</strong> — optionally read data from a connected external GPS module. Not required.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>Leanster is intended for adult motorcyclists and is not directed at children.</p>
+
+  <h2>Your choices</h2>
+  <ul>
+    <li>Deny or revoke the location permission in Android settings (recording will be unavailable).</li>
+    <li>Delete individual rides in the app, or clear all data by uninstalling.</li>
+  </ul>
+
+  <h2>Changes to this policy</h2>
+  <p>We may update this policy; the "Effective date" above will change accordingly.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy: <a href="mailto:michasteinauer@gmail.com">michasteinauer@gmail.com</a></p>
+
+  <footer>
+    &copy; 2026 Leanster. This policy applies to the Leanster Android app (<code>com.ridetracker.ride</code>).
+  </footer>
+</div>
+</body>
+</html>

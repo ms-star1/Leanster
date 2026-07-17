@@ -75,7 +75,7 @@ import java.util.Calendar
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun DashboardPortraitPreview() {
-    RideTrackerTheme {
+    LeansterTheme {
         Box(modifier = Modifier.fillMaxSize().background(DeepBase)) {
             DashboardViewContentMock()
         }
@@ -85,7 +85,7 @@ fun DashboardPortraitPreview() {
 @Preview(showBackground = true, widthDp = 800, heightDp = 400)
 @Composable
 fun DashboardLandscapePreview() {
-    RideTrackerTheme {
+    LeansterTheme {
         Box(modifier = Modifier.fillMaxSize().background(DeepBase)) {
             DashboardViewContentMock()
         }
@@ -420,6 +420,34 @@ fun LivePbOverlay(pb: PbComparison, highlightColor: Color, onDismiss: () -> Unit
 
 // Removed manual orientation persistence
 
+/** Native reproduction of the Ko-fi donate button (opens the Ko-fi page in a browser). */
+@Composable
+fun KofiButton(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    Row(
+        modifier = modifier
+            .background(Color(0xFF000000), RoundedCornerShape(8.dp))
+            .border(BorderStroke(1.dp, Color(0xFF2A2A2A)), RoundedCornerShape(8.dp))
+            .clickable {
+                context.startActivity(
+                    android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://ko-fi.com/F1I523CTZA")
+                    )
+                )
+            }
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("☕", fontSize = 15.sp)
+        Text(
+            "Fun? Support me on Ko-Fi", fontSize = 13.sp, color = PureWhite,
+            fontFamily = Inter, fontWeight = FontWeight.SemiBold, letterSpacing = 0.3.sp
+        )
+    }
+}
+
 @Composable
 fun SettingsScreen(
     service: TelemetryService,
@@ -438,6 +466,7 @@ fun SettingsScreen(
     val autoResumeOnLean by service.autoResumeOnLean.collectAsStateWithLifecycle()
     val showDemoSession by service.showDemoSession.collectAsStateWithLifecycle()
     val minCornerPeak by service.minCornerPeakLean.collectAsStateWithLifecycle()
+    val use24HourTime by service.use24HourTime.collectAsStateWithLifecycle()
 
     var devModeClickCount by remember { mutableIntStateOf(0) }
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -454,7 +483,7 @@ fun SettingsScreen(
 
             // ── Header ────────────────────────────────────────────────────
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp).padding(bottom = 6.dp)) {
-                Text("RIDETRACKER", fontSize = 11.sp, letterSpacing = 3.sp, color = MutedGrey, fontFamily = Inter)
+                Text("LEANSTER", fontSize = 11.sp, letterSpacing = 3.sp, color = MutedGrey, fontFamily = Inter)
                 Text(
                     text = "SETTINGS" + if (isDevModeActive) " (DEV)" else "",
                     fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp,
@@ -471,6 +500,13 @@ fun SettingsScreen(
                     }
                 )
             }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── SUPPORT ───────────────────────────────────────────────────
+            Text("SUPPORT", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 12.dp))
+            KofiButton(Modifier.padding(horizontal = 24.dp))
+            Spacer(Modifier.height(18.dp))
             HorizontalDivider(color = BorderDivider)
 
             // ── BRAND PRESET ──────────────────────────────────────────────
@@ -515,6 +551,28 @@ fun SettingsScreen(
                     .clickable { if (isMetric) onToggleUnit() }.padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) { Text("mph", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp, color = if (!isMetric) DeepCarbon else MutedGrey) }
+            }
+            Spacer(Modifier.height(18.dp))
+            HorizontalDivider(color = BorderDivider)
+
+            // ── TIME FORMAT ───────────────────────────────────────────────
+            Text("TIME FORMAT", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+                    .background(Color(0xFF111510), RoundedCornerShape(8.dp))
+                    .border(BorderStroke(1.dp, BorderDivider), RoundedCornerShape(8.dp))
+            ) {
+                Box(modifier = Modifier.weight(1f)
+                    .background(if (use24HourTime) highlightColor else Color.Transparent, RoundedCornerShape(8.dp))
+                    .clickable { if (!use24HourTime) service.setUse24HourTime(true) }.padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) { Text("24 h", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp, color = if (use24HourTime) DeepCarbon else MutedGrey) }
+                Box(modifier = Modifier.weight(1f)
+                    .background(if (!use24HourTime) highlightColor else Color.Transparent, RoundedCornerShape(8.dp))
+                    .clickable { if (use24HourTime) service.setUse24HourTime(false) }.padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) { Text("12 h", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp, color = if (!use24HourTime) DeepCarbon else MutedGrey) }
             }
             Spacer(Modifier.height(18.dp))
             HorizontalDivider(color = BorderDivider)
@@ -672,7 +730,7 @@ fun SettingsScreen(
             .padding(horizontal = 24.dp, vertical = 24.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("RideTracker 1.0.0", fontSize = 11.sp, letterSpacing = 1.sp,
+            Text("Leanster 1.0.0", fontSize = 11.sp, letterSpacing = 1.sp,
                 color = Color(0xFF2A3028), fontFamily = FontFamily.Monospace)
             Text("Offline · No account", fontSize = 11.sp, letterSpacing = 1.sp,
                 color = Color(0xFF2A3028), fontFamily = FontFamily.Monospace)
@@ -1570,6 +1628,13 @@ fun DashboardPortraitLayout(
                     }
                 }
 
+                // ── Ko-fi support (after the user's 2nd recorded ride) ─────
+                if (pastSessions.size >= 2) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 8.dp)) {
+                        KofiButton()
+                    }
+                }
+
                 // ── Recording Row ─────────────────────────────────────────
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 4.dp),
@@ -2174,6 +2239,11 @@ fun DashboardLandscapeLayout(
                 onDismiss = { showCalibrationGuide = false; startRideAfterCalibrationL = false },
                 onCalibrationSuccess = if (startRideAfterCalibrationL) {{ service.armSession() }} else null
             )
+        }
+
+        // Ko-fi support (after the user's 2nd recorded ride), pinned to the top-right corner
+        if (pastSessions.size >= 2) {
+            KofiButton(Modifier.align(Alignment.TopEnd).padding(12.dp))
         }
     }
 }

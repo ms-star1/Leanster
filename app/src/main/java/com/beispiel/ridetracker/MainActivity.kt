@@ -100,7 +100,7 @@ class MainActivity : ComponentActivity() {
         requestPermissionLauncher.launch(permissions.toTypedArray())
 
         setContent {
-            RideTrackerTheme {
+            LeansterTheme {
                 MainContent()
             }
         }
@@ -179,6 +179,8 @@ class MainActivity : ComponentActivity() {
         }
         val calibrationAlert by (service?.calibrationAlert?.collectAsStateWithLifecycle()
             ?: remember { mutableStateOf(null) })
+        val is24Hour by (service?.use24HourTime?.collectAsStateWithLifecycle()
+            ?: remember { mutableStateOf(true) })
 
         val mapView = remember {
             MapView(context).apply {
@@ -276,6 +278,7 @@ class MainActivity : ComponentActivity() {
                         }
                         3 -> {
                             val sessions by service.pastSessions.collectAsStateWithLifecycle()
+                            val trashed by service.trashedSessions.collectAsStateWithLifecycle()
                             val showDemo by service.showDemoSession.collectAsStateWithLifecycle()
                             val demoSession = remember { createDemoSession() }
                             val allSessionsWithDemo = remember(sessions, showDemo) {
@@ -283,11 +286,13 @@ class MainActivity : ComponentActivity() {
                             }
                             var selectedSession by remember { mutableStateOf<RideSession?>(null) }
                             var cornerSession by remember { mutableStateOf<RideSession?>(null) }
+                            var showBin by remember { mutableStateOf(false) }
 
                             BackHandler(enabled = true) {
                                 when {
                                     cornerSession != null -> cornerSession = null
                                     selectedSession != null -> selectedSession = null
+                                    showBin -> showBin = false
                                     else -> currentTab = 0
                                 }
                             }
@@ -297,6 +302,7 @@ class MainActivity : ComponentActivity() {
                                     sessions = sessions,
                                     highlightColor = highlightColor,
                                     isMetric = isMetric,
+                                    is24Hour = is24Hour,
                                     onBack = { currentTab = 0 },
                                     onDeleteSession = { sessionId ->
                                         service.deleteSession(sessionId)
@@ -312,14 +318,16 @@ class MainActivity : ComponentActivity() {
                                         service.exportAllSessionsToCsv()?.let { shareCsvFile(context, it) }
                                     },
                                     onShowSettings = { currentTab = 1 },
+                                    onShowBin = { showBin = true },
+                                    trashCount = trashed.size,
                                     showDemoSession = showDemo
                                 )
 
                                 if (selectedSession != null) {
-                                    val rideNumber = allSessionsWithDemo.indexOf(selectedSession!!) + 1
                                     SessionSummaryOverlay(
                                         session = selectedSession!!,
                                         isMetric = isMetric,
+                                        is24Hour = is24Hour,
                                         highlightColor = highlightColor,
                                         onClose = { selectedSession = null },
                                         mapView = mapView,
@@ -328,7 +336,6 @@ class MainActivity : ComponentActivity() {
                                             service.deleteSession(sessionId)
                                             selectedSession = null
                                         },
-                                        rideNumber = rideNumber,
                                         onShowCorners = { cornerSession = it },
                                         onExportCsv = { session ->
                                             val csvFile = service.saveSessionToCsv(session)
@@ -340,9 +347,20 @@ class MainActivity : ComponentActivity() {
                                 cornerSession?.let { cs ->
                                     CornerMapScreen(
                                         session = cs,
-                                        rideNumber = allSessionsWithDemo.indexOf(cs) + 1,
                                         highlightColor = highlightColor,
                                         onClose = { cornerSession = null }
+                                    )
+                                }
+
+                                if (showBin) {
+                                    RecycleBinScreen(
+                                        trashed = trashed,
+                                        is24Hour = is24Hour,
+                                        highlightColor = highlightColor,
+                                        onBack = { showBin = false },
+                                        onRestore = { service.restoreSession(it) },
+                                        onDeleteForever = { service.permanentlyDeleteSession(it) },
+                                        onEmptyBin = { service.emptyTrash() }
                                     )
                                 }
                             }

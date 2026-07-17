@@ -15,11 +15,14 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.WindowManager
+import android.widget.Toast
 import kotlin.math.abs as absF
 import androidx.core.app.NotificationCompat
 import com.beispiel.ridetracker.database.AppDatabase
@@ -37,6 +40,7 @@ import kotlin.math.sqrt
 class TelemetryService : Service(), SensorEventListener, LocationListener {
 
     private val binder = TelemetryBinder()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var sensorManager: SensorManager
     private lateinit var locationManager: LocationManager
     private val gson = Gson()
@@ -45,6 +49,8 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val sessionPoints = MutableStateFlow<List<TelemetryPoint>>(emptyList())
     val detectedCorners = MutableStateFlow<List<CornerEvent>>(emptyList())
     val pastSessions = MutableStateFlow<List<RideSession>>(emptyList())
+    val trashedSessions = MutableStateFlow<List<RideSession>>(emptyList())
+    private val TRASH_RETENTION_MS = 30L * 24 * 60 * 60 * 1000 // 30 days
 
     // Live Dashboard States
     val currentLean = MutableStateFlow(0f)
@@ -60,6 +66,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     val gpsUpdateRateHz = MutableStateFlow(0f)
     val autoResumeOnLean = MutableStateFlow(false)
     val showDemoSession = MutableStateFlow(true)
+    val use24HourTime = MutableStateFlow(true)
 
     // All-time records (persisted in SharedPreferences)
     val allTimeMaxLeft = MutableStateFlow(0f)
@@ -156,6 +163,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         rollingDistanceTarget.value = prefs.getInt("rolling_distance_target", 1000)
         autoResumeOnLean.value = prefs.getBoolean("auto_resume_on_lean", false)
         showDemoSession.value  = prefs.getBoolean("show_demo_session", true)
+        use24HourTime.value    = prefs.getBoolean("use_24_hour_time", true)
         minCornerPeakLean.value = prefs.getFloat("min_corner_peak_lean", 25f)
 
         val dao = AppDatabase.getInstance(this).cornerDao()
@@ -173,6 +181,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         speedInterpolationEngine.start()
 
         loadSessions()
+        loadTrashedSessions() // also purges bin entries older than the retention window
         startCalibrationWatchEngine()
         startForegroundNotification()
         startDataStreams()
@@ -221,16 +230,32 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
     private fun loadSessions() {
         val dir = getExternalFilesDir("sessions") ?: return
         val files = dir.listFiles { _, name -> name.endsWith(".json") }
-        val sessions = files?.mapNotNull { file ->
-            try {
-                val json = file.readText()
-                gson.fromJson(json, RideSession::class.java)
-            } catch (e: Exception) {
-                Log.e("TelemetryService", "Error loading session ${file.name}: ${e.message}")
-                null
-            }
-        }?.sortedByDescending { it.startTime } ?: emptyList()
+        val sessions = files?.mapNotNull { readSessionFile(it) }
+            ?.sortedByDescending { it.startTime } ?: emptyList()
         pastSessions.value = sessions
+    }
+
+    private fun readSessionFile(file: File): RideSession? = try {
+        gson.fromJson(file.readText(), RideSession::class.java)
+    } catch (e: Exception) {
+        Log.e("TelemetryService", "Error loading session ${file.name}: ${e.message}")
+        null
+    }
+
+    /** Loads the recycle bin, permanently purging any entry past the 30-day retention window. */
+    private fun loadTrashedSessions() {
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        val now = System.currentTimeMillis()
+        val files = trashDir.listFiles { _, name -> name.endsWith(".json") } ?: emptyArray()
+        val kept = files.mapNotNull { file ->
+            val session = readSessionFile(file) ?: return@mapNotNull null
+            val deletedAt = session.deletedAt ?: 0L
+            if (deletedAt > 0L && now - deletedAt > TRASH_RETENTION_MS) {
+                file.delete() // expired — gone for good
+                null
+            } else session
+        }.sortedByDescending { it.deletedAt ?: 0L }
+        trashedSessions.value = kept
     }
 
     private var currentSessionStartTime = 0L
@@ -322,19 +347,60 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
             .edit().putBoolean("show_demo_session", show).apply()
     }
 
+    fun setUse24HourTime(enabled: Boolean) {
+        use24HourTime.value = enabled
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putBoolean("use_24_hour_time", enabled).apply()
+    }
+
     fun setMinCornerPeakLean(degrees: Float) {
         minCornerPeakLean.value = degrees
         androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
             .edit().putFloat("min_corner_peak_lean", degrees).apply()
     }
 
+    /** Soft delete: move a session into the recycle bin (kept for 30 days). */
     fun deleteSession(sessionId: String) {
         val dir = getExternalFilesDir("sessions") ?: return
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
         val file = File(dir, "$sessionId.json")
-        if (file.exists()) {
-            file.delete()
-            loadSessions()
+        if (!file.exists()) return
+        readSessionFile(file)?.let { session ->
+            session.deletedAt = System.currentTimeMillis()
+            File(trashDir, "$sessionId.json").writeText(gson.toJson(session))
         }
+        file.delete()
+        loadSessions()
+        loadTrashedSessions()
+    }
+
+    /** Restore a session from the recycle bin back to the active list. */
+    fun restoreSession(sessionId: String) {
+        val dir = getExternalFilesDir("sessions") ?: return
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        val file = File(trashDir, "$sessionId.json")
+        if (!file.exists()) return
+        readSessionFile(file)?.let { session ->
+            session.deletedAt = null
+            File(dir, "$sessionId.json").writeText(gson.toJson(session))
+        }
+        file.delete()
+        loadSessions()
+        loadTrashedSessions()
+    }
+
+    /** Permanently delete a single session from the recycle bin. */
+    fun permanentlyDeleteSession(sessionId: String) {
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        File(trashDir, "$sessionId.json").delete()
+        loadTrashedSessions()
+    }
+
+    /** Permanently delete every session in the recycle bin. */
+    fun emptyTrash() {
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        trashDir.listFiles { _, name -> name.endsWith(".json") }?.forEach { it.delete() }
+        loadTrashedSessions()
     }
 
     fun calibrateSensors() {
@@ -580,6 +646,11 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         )
     }
 
+    /** Shows a brief Toast on the main thread (safe to call from the sensor thread). */
+    private fun showShortMessage(text: String) {
+        mainHandler.post { Toast.makeText(applicationContext, text, Toast.LENGTH_SHORT).show() }
+    }
+
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null) return
 
@@ -607,6 +678,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
                 androidx.preference.PreferenceManager
                     .getDefaultSharedPreferences(this)
                     .edit().putBoolean("isCalibrated", false).apply()
+                showShortMessage("Orientation changed — calibration lost. Please recalibrate.")
             }
             calibrationWarmupUntil = System.currentTimeMillis() + 2500L
             Log.d("TelemetryService", "Display rotation changed to $displayRotation — axes remapped, calibration cleared")
@@ -683,15 +755,24 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
                 }
 
                 val isMovingFast = kotlin.math.abs(gyroRollRateDeg) > 5.0f
-                val dynamicAlpha = if (isMovingFast) alphaFast else alphaSlow
-                
+                val leanAlpha = if (isMovingFast) alphaFast else alphaSlow // lean keeps vibration-tuned gain
+
+                // Pitch: correct far harder toward the bounded absolute reference so gyro-integration
+                // drift can't ratchet up during aggressive cornering (root cause of false "extreme
+                // pitch" mount-slip stops). Real bike pitch is low-frequency, so it doesn't need the
+                // gyro-dominant, vibration-immune treatment lean needs. Cap the gyro trust.
+                val basePitchAlpha = leanAlpha.coerceAtMost(0.99f) // >=1% reference pull / sample
+                // During fast left/right flicks the pitch gyro channel is cross-axis contaminated by
+                // roll rate, so lean even harder on the absolute reference.
+                val pitchAlpha = if (kotlin.math.abs(gyroRollRateDeg) > 60f) 0.95f else basePitchAlpha
+
                 // Blend gravity and centripetal lean to prevent linear acceleration from causing drift via yaw bias
                 val yawRateAbs = kotlin.math.abs(omegaBike[2])
                 val turnFactor = ((yawRateAbs - 0.02f) * 16.66f).coerceIn(0f, 1f)
                 val referenceLean = (turnFactor * gpsLeanDeg) + ((1f - turnFactor) * lastTargetLean)
-                
-                leanAngle = (dynamicAlpha * integratedLean) + ((1f - dynamicAlpha) * referenceLean)
-                pitchAngle = (dynamicAlpha * integratedPitch) + ((1f - dynamicAlpha) * lastTargetPitch)
+
+                leanAngle = (leanAlpha * integratedLean) + ((1f - leanAlpha) * referenceLean)
+                pitchAngle = (pitchAlpha * integratedPitch) + ((1f - pitchAlpha) * lastTargetPitch)
             } else {
                 leanAngle = integratedLean
                 pitchAngle = integratedPitch
@@ -1201,7 +1282,7 @@ class TelemetryService : Service(), SensorEventListener, LocationListener {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
 
         val notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("RideTracker")
+            .setContentTitle("Leanster")
             .setContentText("Sensor telemetry active")
             .setSmallIcon(R.drawable.ic_launcher_fg_white)
             .build()

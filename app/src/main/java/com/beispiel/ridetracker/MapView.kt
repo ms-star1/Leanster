@@ -62,7 +62,7 @@ fun AnalyticsMapPreview() {
     val mockCorners = listOf(
         CornerEvent(1, 0, 1, -5f, 15f, 1)
     )
-    RideTrackerTheme {
+    LeansterTheme {
         AnalyticsMapContent(
             points = mockPoints,
             corners = mockCorners,

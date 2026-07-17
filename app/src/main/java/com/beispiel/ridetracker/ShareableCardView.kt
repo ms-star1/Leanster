@@ -58,7 +58,7 @@ fun ShareableSessionCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("RIDETRACKER", style = MaterialTheme.typography.titleMedium.copy(fontFamily = Rajdhani),
+                Text("LEANSTER", style = MaterialTheme.typography.titleMedium.copy(fontFamily = Rajdhani),
                     color = highlightColor, letterSpacing = 2.sp)
                 Text(dateStr, style = MaterialTheme.typography.labelSmall, color = MutedGrey)
             }
@@ -154,7 +154,7 @@ fun shareSessionCard(context: Context, session: RideSession, highlightColor: Col
     val pad = 72f
 
     // ── Header ──
-    text("RideTracker", pad, 150f, 64f, white, sansBold, spacing = 0.02f)
+    text("Leanster", pad, 150f, 64f, white, sansBold, spacing = 0.02f)
     text("$dateStr", pad, 200f, 30f, muted, mono, spacing = 0.12f)
 
     // ── Route map ──

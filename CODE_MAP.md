@@ -10,7 +10,7 @@ This file serves as a quick lookup map of the RideTracker codebase structure.
 - **`TelemetryData.kt`**: Core domain model data classes (`TelemetryPoint`, `CornerEvent`, `RideSession`).
 - **`VoiceCoach.kt`**: Text-to-speech engine providing real-time audio cues for corners and performance.
 - **`DemoData.kt`**: Mock data generator used for previews and testing.
-- `RideTrackerApplication.kt`: Application subclass for global context.
+- `LeansterApplication.kt`: Application subclass for global context.
 
 ## Views & Layouts
 - **`DashboardView.kt`**: Implements the main riding screens:

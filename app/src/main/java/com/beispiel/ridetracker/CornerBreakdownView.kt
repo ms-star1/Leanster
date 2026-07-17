@@ -173,7 +173,6 @@ private val SAT_STYLE = """
 @Composable
 fun CornerMapScreen(
     session: RideSession,
-    rideNumber: Int,
     highlightColor: Color,
     onClose: () -> Unit
 ) {
@@ -423,7 +422,7 @@ fun CornerMapScreen(
                     color = PureWhite, fontFamily = Inter
                 )
                 Text(
-                    "RIDE #$rideNumber · RANKED BY LEAN · SORTED BY TIME",
+                    "RANKED BY LEAN · SORTED BY TIME",
                     fontSize = 10.sp, letterSpacing = 0.6.sp,
                     color = MutedGrey, fontFamily = FontFamily.Monospace
                 )

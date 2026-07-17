@@ -13,3 +13,11 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Signing — never commit the keystore or its passwords
+/keystore.properties
+*.jks
+*.keystore
+
+# Release build artifacts (AAB/APK output)
+/app/release/
