@@ -4,7 +4,7 @@
 **App:** Leanster (package `com.ridetracker.ride`)
 **Developer contact:** michasteinauer@gmail.com
 
-> Replace the contact email if you want to use a dedicated address. Host this document at a public URL (e.g. GitHub Pages) and paste that URL into the Google Play Console → *Store presence → Privacy policy*.
+> **Live at:** https://ms-star1.github.io/Leanster/ — this is the URL to paste into Google Play Console → *Store presence → Privacy policy*. (Source: `docs/index.html`, served via GitHub Pages.) Replace the contact email if you want to use a dedicated address.
 
 ---
 
