@@ -1,6 +1,6 @@
 # Play Store submission docs — Leanster
 
-Draft declarations for publishing **Leanster** (`com.ridetracker.ride`) to Google Play.
+Draft declarations for publishing **Leanster** (`com.leanster.app`) to Google Play.
 All content reflects the app as built: on-device data only, no accounts/analytics/ads/backend.
 
 | File | Console location | Purpose |

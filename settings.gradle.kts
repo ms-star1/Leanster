@@ -23,6 +23,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "RideTracker"
+rootProject.name = "Leanster"
 include(":app")
  

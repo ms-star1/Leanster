@@ -1,6 +1,6 @@
 # Data Safety Form — Answers for Google Play Console
 
-App: **Leanster** (`com.ridetracker.ride`)
+App: **Leanster** (`com.leanster.app`)
 Location in console: *App content → Data safety*
 
 > This is a fill-in guide. Enter these answers in the Data safety questionnaire. Answers reflect the app as built: on-device storage only, no analytics/ads, no first-party server, sharing only when the user initiates it.

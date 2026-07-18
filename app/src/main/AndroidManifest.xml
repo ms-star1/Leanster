@@ -21,14 +21,14 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.RideTracker">
+        android:theme="@style/Theme.Leanster">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
-            android:theme="@style/Theme.RideTracker"/>
+            android:theme="@style/Theme.Leanster"/>
 
         <!-- Icon aliases — exactly one enabled at a time, switched via AppIconSwitcher -->
         <activity-alias

@@ -1,0 +1,1372 @@
+package com.bike.leanster
+
+import android.app.*
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Binder
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import android.view.Surface
+import android.view.WindowManager
+import android.widget.Toast
+import kotlin.math.abs as absF
+import androidx.core.app.NotificationCompat
+import com.bike.leanster.database.AppDatabase
+import com.bike.leanster.database.entities.SessionCornerEntity
+import com.google.gson.Gson
+import com.hoho.android.usbserial.driver.UsbSerialPort
+import com.hoho.android.usbserial.driver.UsbSerialProber
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.io.File
+import java.io.FileWriter
+import kotlin.math.atan2
+import kotlin.math.sqrt
+
+class TelemetryService : Service(), SensorEventListener, LocationListener {
+
+    private val binder = TelemetryBinder()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private lateinit var sensorManager: SensorManager
+    private lateinit var locationManager: LocationManager
+    private val gson = Gson()
+
+    // High frequency storage
+    val sessionPoints = MutableStateFlow<List<TelemetryPoint>>(emptyList())
+    val detectedCorners = MutableStateFlow<List<CornerEvent>>(emptyList())
+    val pastSessions = MutableStateFlow<List<RideSession>>(emptyList())
+    val trashedSessions = MutableStateFlow<List<RideSession>>(emptyList())
+    private val TRASH_RETENTION_MS = 30L * 24 * 60 * 60 * 1000 // 30 days
+
+    // Live Dashboard States
+    val currentLean = MutableStateFlow(0f)
+    val currentPitch = MutableStateFlow(0f)
+    val currentSpeed = MutableStateFlow(0.0)
+    val currentLocation = MutableStateFlow<Location?>(null)
+    val currentHeading = MutableStateFlow(0f)
+    val isRecording = MutableStateFlow(false)
+    val isPaused = MutableStateFlow(false)
+    val isArmed = MutableStateFlow(false)
+    val isWheelieAlert = MutableStateFlow(false)
+    val isDevModeActive = MutableStateFlow(false)
+    val gpsUpdateRateHz = MutableStateFlow(0f)
+    val autoResumeOnLean = MutableStateFlow(false)
+    val showDemoSession = MutableStateFlow(true)
+    val use24HourTime = MutableStateFlow(true)
+
+    // Video recording (camera) — whether the current/pending ride records video, plus the
+    // remembered "ask me every ride" preference. videoModeActive is session-scoped (not persisted);
+    // videoPromptRemembered/videoRecordByDefault persist the user's "remember my selection" choice.
+    val videoModeActive = MutableStateFlow(false)
+    val videoPromptRemembered = MutableStateFlow(false)
+    val videoRecordByDefault = MutableStateFlow(false)
+
+    // All-time records (persisted in SharedPreferences)
+    val allTimeMaxLeft = MutableStateFlow(0f)
+    val allTimeMaxRight = MutableStateFlow(0f)
+    val allTimeMaxPitch = MutableStateFlow(0f)
+
+    // Session-specific stats
+    val sessionMaxLeft = MutableStateFlow(0f)
+    val sessionMaxRight = MutableStateFlow(0f)
+    val sessionMaxPitch = MutableStateFlow(0f)
+    val rollingMaxLeft = MutableStateFlow(0f)
+    val rollingMaxRight = MutableStateFlow(0f)
+    val rollingMax1000m = MutableStateFlow(0f)
+    val rollingDistanceTarget = MutableStateFlow(1000)
+
+    // 3D Mounting Calibration Matrix
+    private var rDeviceToBike = FloatArray(9) { if (it % 4 == 0) 1f else 0f }
+    private var isCalibrating = false
+    val isCalibrated = MutableStateFlow(false)
+
+    // Calibration Watch Engine
+    val calibrationAlert = MutableStateFlow<String?>(null)
+    private var calibrationToneGen: ToneGenerator? = null
+    private var calibrationWarmupUntil = 0L
+    private var lastDisplayRotation = Surface.ROTATION_0
+
+    // Complementary Filter & Gyro variables
+    private var lastTimestamp = 0L
+    private var leanAngle = 0f // In degrees
+    private var pitchAngle = 0f // In degrees
+    private var lastTargetLean = 0f
+    private var lastTargetPitch = 0f
+    private var hasAbsoluteTarget = false
+    private val alpha = 0.95f // Complementary filter coefficient
+    private var currentGyroRollRate = 0f
+    private var currentGyroYawRate = 0f
+    val vibrationFiltering = MutableStateFlow("Standard")
+    val forceFilterStandstill = MutableStateFlow(false)
+
+    // Sensitivity Thresholds
+    private val WHEELIE_THRESHOLD = 15.0f // Degrees
+    private val ENDO_THRESHOLD = -10.0f  // Degrees
+
+    // Corner Detection Engine State
+    private var currentState = RideState.STRAIGHT
+    private var activeCorner: CornerEvent? = null
+    private var lastLocation: Location? = null
+    private var lastLoggedLocation: Location? = null
+
+    // Corner detection quality filters
+    val minCornerPeakLean = MutableStateFlow(25f)  // user-configurable: 15 / 25 / 35 °
+    private var cdEntryCount = 0   // consecutive samples >= entry threshold
+    private var cdExitCount  = 0   // consecutive samples <  exit threshold
+    private var cdEntryTime  = 0L  // wall-clock ms when entry was confirmed
+
+    // Per-corner PB system
+    val livePbComparison = MutableStateFlow<PbComparison?>(null)
+    private lateinit var cornerMatchingEngine: CornerMatchingEngine
+    private lateinit var voiceCoach: VoiceCoach
+    private lateinit var speedInterpolationEngine: SpeedInterpolationEngine
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // USB GPS configurations
+    private var usbPort: UsbSerialPort? = null
+    private var usbJob: Job? = null
+    val isUsbGpsConnected = MutableStateFlow(false)
+
+    inner class TelemetryBinder : Binder() {
+        fun getService(): TelemetryService = this@TelemetryService
+    }
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onCreate() {
+        super.onCreate()
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        allTimeMaxLeft.value = prefs.getFloat("allTimeMaxLeft", 0f)
+        allTimeMaxRight.value = prefs.getFloat("allTimeMaxRight", 0f)
+        allTimeMaxPitch.value = prefs.getFloat("allTimeMaxPitch", 0f)
+        for (i in 0..8) {
+            rDeviceToBike[i] = prefs.getFloat("rDeviceToBike_$i", if (i % 4 == 0) 1f else 0f)
+        }
+        isCalibrated.value = false
+        // Give the filter time to settle before the watch engine begins checking deltas.
+        // Without this, watchPrevLean/Pitch start at 0f and the first real reading fires a false alert.
+        if (isCalibrated.value) calibrationWarmupUntil = System.currentTimeMillis() + 7000L
+        
+        // Load default vibration filter preset
+        vibrationFiltering.value = prefs.getString("vibration_filtering", "Standard") ?: "Standard"
+        forceFilterStandstill.value = prefs.getBoolean("force_filter_standstill", false)
+        rollingDistanceTarget.value = prefs.getInt("rolling_distance_target", 1000)
+        autoResumeOnLean.value = prefs.getBoolean("auto_resume_on_lean", false)
+        showDemoSession.value  = prefs.getBoolean("show_demo_session", true)
+        use24HourTime.value    = prefs.getBoolean("use_24_hour_time", true)
+        minCornerPeakLean.value = prefs.getFloat("min_corner_peak_lean", 25f)
+        videoPromptRemembered.value = prefs.getBoolean("video_prompt_remembered", false)
+        videoRecordByDefault.value  = prefs.getBoolean("video_record_by_default", false)
+
+        val dao = AppDatabase.getInstance(this).cornerDao()
+        cornerMatchingEngine = CornerMatchingEngine(dao)
+        voiceCoach = VoiceCoach(this)
+
+        speedInterpolationEngine = SpeedInterpolationEngine(
+            sensorManager = sensorManager,
+            getMatrix = { rDeviceToBike },
+            onSpeedUpdate = { kmh ->
+                currentSpeed.value = kmh
+                if (isArmed.value && kmh >= 5.0) startRecording()
+            }
+        )
+        speedInterpolationEngine.start()
+
+        loadSessions()
+        loadTrashedSessions() // also purges bin entries older than the retention window
+        startCalibrationWatchEngine()
+        startForegroundNotification()
+        startDataStreams()
+    }
+
+    fun setVibrationFiltering(level: String) {
+        vibrationFiltering.value = level
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().putString("vibration_filtering", level).apply()
+    }
+
+    fun setForceFilterStandstill(enabled: Boolean) {
+        forceFilterStandstill.value = enabled
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().putBoolean("force_filter_standstill", enabled).apply()
+    }
+
+    fun setRollingDistanceTarget(targetMeters: Int) {
+        rollingDistanceTarget.value = targetMeters
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().putInt("rolling_distance_target", targetMeters).apply()
+    }
+
+    private fun startDataStreams() {
+        // Start Rotation Vector Loop with SENSOR_DELAY_GAME
+        val rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        rotationVectorSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+
+        // Start Gyroscope Loop with SENSOR_DELAY_GAME
+        val gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        gyroSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+
+        // Internal high-frequency location updates
+        try {
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this)
+        } catch (e: SecurityException) { e.printStackTrace() }
+
+        // Automatically attempt initializing Adafruit USB GPS if connected
+        initUsbGps()
+    }
+
+    private fun loadSessions() {
+        val dir = getExternalFilesDir("sessions") ?: return
+        val files = dir.listFiles { _, name -> name.endsWith(".json") }
+        val sessions = files?.mapNotNull { readSessionFile(it) }
+            ?.sortedByDescending { it.startTime } ?: emptyList()
+        pastSessions.value = sessions
+    }
+
+    private fun readSessionFile(file: File): RideSession? = try {
+        gson.fromJson(file.readText(), RideSession::class.java)
+    } catch (e: Exception) {
+        Log.e("TelemetryService", "Error loading session ${file.name}: ${e.message}")
+        null
+    }
+
+    /** Loads the recycle bin, permanently purging any entry past the 30-day retention window. */
+    private fun loadTrashedSessions() {
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        val now = System.currentTimeMillis()
+        val files = trashDir.listFiles { _, name -> name.endsWith(".json") } ?: emptyArray()
+        val kept = files.mapNotNull { file ->
+            val session = readSessionFile(file) ?: return@mapNotNull null
+            val deletedAt = session.deletedAt ?: 0L
+            if (deletedAt > 0L && now - deletedAt > TRASH_RETENTION_MS) {
+                file.delete() // expired — gone for good
+                null
+            } else session
+        }.sortedByDescending { it.deletedAt ?: 0L }
+        trashedSessions.value = kept
+    }
+
+    private var currentSessionStartTime = 0L
+    // Absolute path of the mp4 for the in-progress video ride; persisted onto the session when saved.
+    private var currentVideoPath: String? = null
+    // Wall-clock ms of the recording's first frame (video↔telemetry sync origin); persisted with the session.
+    private var currentVideoStartTime: Long? = null
+
+    /** Arms the session: waits for ≥5 km/h before actually starting the recording clock. */
+    fun armSession() {
+        if (isRecording.value && !isPaused.value) return
+        if (isPaused.value) { isPaused.value = false; return }
+        isArmed.value = true
+    }
+
+    fun disarmSession() {
+        isArmed.value = false
+        videoModeActive.value = false
+    }
+
+    /** Starts (or resumes) recording immediately, bypassing the arm threshold. */
+    fun startRecording() {
+        if (isRecording.value && !isPaused.value) return
+        if (isPaused.value) {
+            isPaused.value = false
+            return
+        }
+        isArmed.value = false
+        isRecording.value = true
+        isPaused.value = false
+        livePbComparison.value = null
+        resetSessionStats()
+        currentSessionStartTime = System.currentTimeMillis()
+        voiceCoach.trigger(VoiceCoach.CoachEvent.SESSION_START)
+    }
+
+    fun pauseRecording() {
+        if (!isRecording.value || isPaused.value) return
+        isPaused.value = true
+    }
+
+    fun stopRecording() {
+        if (!isRecording.value) return
+        isRecording.value = false
+        isPaused.value = false
+        videoModeActive.value = false
+        voiceCoach.trigger(VoiceCoach.CoachEvent.SESSION_END)
+        
+        // Finalize all-time records in preferences
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().apply {
+            putFloat("allTimeMaxLeft", allTimeMaxLeft.value)
+            putFloat("allTimeMaxRight", allTimeMaxRight.value)
+            putFloat("allTimeMaxPitch", allTimeMaxPitch.value)
+            apply()
+        }
+    }
+
+    fun confirmSaveSession() {
+        saveSessionLocally()
+    }
+
+    /** Stops recording immediately and saves the session with a reason label. */
+    fun stopRecordingWithReason(reason: String) {
+        if (!isRecording.value) return
+        isRecording.value = false
+        isPaused.value = false
+        videoModeActive.value = false
+        saveSessionLocally(stopReason = reason)
+        resetSessionStats()
+    }
+
+    fun discardSession() {
+        isArmed.value = false
+        isPaused.value = false
+        isRecording.value = false
+        videoModeActive.value = false
+        resetSessionStats()
+    }
+
+    fun discardAndRestartSession() {
+        isPaused.value = false
+        isRecording.value = false
+        resetSessionStats()
+        isArmed.value = true  // re-arm: wait for roll-off again
+    }
+
+    fun setAutoResumeOnLean(enabled: Boolean) {
+        autoResumeOnLean.value = enabled
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putBoolean("auto_resume_on_lean", enabled).apply()
+    }
+
+    fun setShowDemoSession(show: Boolean) {
+        showDemoSession.value = show
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putBoolean("show_demo_session", show).apply()
+    }
+
+    fun setUse24HourTime(enabled: Boolean) {
+        use24HourTime.value = enabled
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putBoolean("use_24_hour_time", enabled).apply()
+    }
+
+    /** Sets whether the current/pending ride records video (used by the camera overlay). */
+    fun setVideoMode(enabled: Boolean) {
+        videoModeActive.value = enabled
+    }
+
+    /**
+     * Records the mp4 path for the in-progress video ride so it is persisted with the session.
+     * Called by the camera overlay the moment CameraX recording starts. Cleared on session reset.
+     */
+    fun attachVideoPath(path: String?) {
+        currentVideoPath = path
+    }
+
+    /** Records the wall-clock time of the recording's first frame (VideoRecordEvent.Start). */
+    fun attachVideoStartTime(epochMs: Long) {
+        currentVideoStartTime = epochMs
+    }
+
+    /** Persists the "remember my selection" choice made in the pre-ride video prompt. */
+    fun setVideoPromptChoice(rememberChoice: Boolean, recordVideo: Boolean) {
+        videoPromptRemembered.value = rememberChoice
+        videoRecordByDefault.value = recordVideo
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit()
+            .putBoolean("video_prompt_remembered", rememberChoice)
+            .putBoolean("video_record_by_default", recordVideo)
+            .apply()
+    }
+
+    /** Clears the remembered video choice so the prompt is shown again before each ride. */
+    fun clearVideoPromptChoice() {
+        videoPromptRemembered.value = false
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit()
+            .putBoolean("video_prompt_remembered", false)
+            .apply()
+    }
+
+    fun setMinCornerPeakLean(degrees: Float) {
+        minCornerPeakLean.value = degrees
+        androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            .edit().putFloat("min_corner_peak_lean", degrees).apply()
+    }
+
+    /** Soft delete: move a session into the recycle bin (kept for 30 days). */
+    fun deleteSession(sessionId: String) {
+        val dir = getExternalFilesDir("sessions") ?: return
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        val file = File(dir, "$sessionId.json")
+        if (!file.exists()) return
+        readSessionFile(file)?.let { session ->
+            session.deletedAt = System.currentTimeMillis()
+            File(trashDir, "$sessionId.json").writeText(gson.toJson(session))
+        }
+        file.delete()
+        loadSessions()
+        loadTrashedSessions()
+    }
+
+    /** Restore a session from the recycle bin back to the active list. */
+    fun restoreSession(sessionId: String) {
+        val dir = getExternalFilesDir("sessions") ?: return
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        val file = File(trashDir, "$sessionId.json")
+        if (!file.exists()) return
+        readSessionFile(file)?.let { session ->
+            session.deletedAt = null
+            File(dir, "$sessionId.json").writeText(gson.toJson(session))
+        }
+        file.delete()
+        loadSessions()
+        loadTrashedSessions()
+    }
+
+    /** Permanently delete a single session from the recycle bin. */
+    fun permanentlyDeleteSession(sessionId: String) {
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        File(trashDir, "$sessionId.json").delete()
+        loadTrashedSessions()
+    }
+
+    /** Permanently delete every session in the recycle bin. */
+    fun emptyTrash() {
+        val trashDir = getExternalFilesDir("sessions_trash") ?: return
+        trashDir.listFiles { _, name -> name.endsWith(".json") }?.forEach { it.delete() }
+        loadTrashedSessions()
+    }
+
+    fun calibrateSensors() {
+        isCalibrating = true
+    }
+
+    fun dismissCalibrationAlert() {
+        calibrationAlert.value = null
+        calibrationToneGen?.stopTone()
+        calibrationToneGen?.release()
+        calibrationToneGen = null
+    }
+
+    private fun triggerCalibrationAlertSound() {
+        try {
+            calibrationToneGen?.release()
+            calibrationToneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+            calibrationToneGen?.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 10000)
+        } catch (e: Exception) {
+            Log.e("CalibWatch", "Tone failed: ${e.message}")
+        }
+    }
+
+    private fun startCalibrationWatchEngine() {
+        serviceScope.launch {
+            // React to any calibration loss (true→false transition): stop or disarm the active session.
+            launch {
+                var wasCalibrated = false
+                isCalibrated.collect { calibrated ->
+                    val justLost = wasCalibrated && !calibrated
+                    wasCalibrated = calibrated
+                    if (justLost) {
+                        when {
+                            isArmed.value -> {
+                                isArmed.value = false
+                                videoModeActive.value = false
+                                Log.d("TelemetryService", "Calibration lost while armed — disarmed silently.")
+                            }
+                            isRecording.value -> {
+                                val duration = System.currentTimeMillis() - currentSessionStartTime
+                                if (duration > 10_000L) {
+                                    stopRecordingWithReason("Stopped — calibration error detected")
+                                    Log.d("TelemetryService", "Calibration lost during recording — session saved with reason.")
+                                } else {
+                                    discardSession()
+                                    Log.d("TelemetryService", "Calibration lost during recording (<10s) — session discarded.")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Baseline tracks the phone's normal position; updated continuously during stable riding
+            // so it follows slow lean changes (cornering) but not sudden jumps.
+            var baselineLean = 0f
+            var baselinePitch = 0f
+            // Consecutive samples where reading stays far from baseline after a sudden step.
+            // A spike returns to baseline quickly (counter resets); a genuine mount move persists.
+            var leanShiftCount = 0
+            var pitchShiftCount = 0
+            val SHIFT_THRESHOLD = 35f   // °/sample to flag a potential mount move
+            val RETURN_THRESHOLD = 20f  // reading must settle within this of baseline to cancel (higher = fewer false resets during chaotic removal)
+            val CONFIRM_SAMPLES = 4     // ~480 ms of persistence required to confirm a real move
+
+            delay(3000L) // let sensors settle on startup
+            baselineLean = currentLean.value
+            baselinePitch = currentPitch.value
+
+            while (true) {
+                delay(120L) // ~8 Hz
+                val lean = currentLean.value
+                val pitch = currentPitch.value
+
+                if (!isCalibrated.value || calibrationAlert.value != null || System.currentTimeMillis() < calibrationWarmupUntil) {
+                    baselineLean = lean; baselinePitch = pitch
+                    leanShiftCount = 0; pitchShiftCount = 0
+                    continue
+                }
+
+                // Lean: detect step → confirm persistence → or cancel if value returns
+                if (leanShiftCount == 0) {
+                    if (absF(lean - baselineLean) > SHIFT_THRESHOLD) {
+                        leanShiftCount = 1
+                        Log.d("TelemetryService", "WatchEngine: lean step detected — lean=$lean baseline=$baselineLean delta=${absF(lean - baselineLean).toInt()}°")
+                    } else {
+                        baselineLean = lean
+                    }
+                } else {
+                    if (absF(lean - baselineLean) < RETURN_THRESHOLD) {
+                        Log.d("TelemetryService", "WatchEngine: lean step cancelled (spike) after $leanShiftCount samples")
+                        leanShiftCount = 0
+                        baselineLean = lean
+                    } else {
+                        leanShiftCount++
+                    }
+                }
+
+                // Pitch: same logic
+                if (pitchShiftCount == 0) {
+                    if (absF(pitch - baselinePitch) > SHIFT_THRESHOLD) {
+                        pitchShiftCount = 1
+                        Log.d("TelemetryService", "WatchEngine: pitch step detected — pitch=$pitch baseline=$baselinePitch delta=${absF(pitch - baselinePitch).toInt()}°")
+                    } else {
+                        baselinePitch = pitch
+                    }
+                } else {
+                    if (absF(pitch - baselinePitch) < RETURN_THRESHOLD) {
+                        Log.d("TelemetryService", "WatchEngine: pitch step cancelled (spike) after $pitchShiftCount samples")
+                        pitchShiftCount = 0
+                        baselinePitch = pitch
+                    } else {
+                        pitchShiftCount++
+                    }
+                }
+
+                val reason = when {
+                    absF(lean) > 70f ->
+                        "Extreme lean angle detected: ${lean.toInt()}°\nPhone may have slipped off the mount."
+                    absF(pitch) > 75f ->
+                        "Extreme pitch angle detected: ${pitch.toInt()}°\nPhone may have rotated on the mount."
+                    leanShiftCount >= CONFIRM_SAMPLES ->
+                        "Persistent lean shift of ${absF(lean - baselineLean).toInt()}° detected.\nPhone may have moved on the mount."
+                    pitchShiftCount >= CONFIRM_SAMPLES ->
+                        "Persistent pitch shift of ${absF(pitch - baselinePitch).toInt()}° detected.\nPhone may have rotated on the mount."
+                    else -> null
+                }
+
+                if (reason != null) {
+                    Log.d("TelemetryService", "WatchEngine: calibration lost — $reason | lean=$lean pitch=$pitch baselineLean=$baselineLean baselinePitch=$baselinePitch")
+                    isCalibrated.value = false
+                    androidx.preference.PreferenceManager
+                        .getDefaultSharedPreferences(this@TelemetryService)
+                        .edit().putBoolean("isCalibrated", false).apply()
+                    calibrationAlert.value = reason
+                    triggerCalibrationAlertSound()
+                    leanShiftCount = 0; pitchShiftCount = 0
+                    // Session stop/disarm is handled reactively by the isCalibrated collector above.
+                }
+            }
+        }
+    }
+
+    fun resetAllTimeLean() {
+        allTimeMaxLeft.value = 0f
+        allTimeMaxRight.value = 0f
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().apply {
+            putFloat("allTimeMaxLeft", 0f)
+            putFloat("allTimeMaxRight", 0f)
+            apply()
+        }
+    }
+
+    fun resetMaxPitch() {
+        allTimeMaxPitch.value = 0f
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.edit().apply {
+            putFloat("allTimeMaxPitch", 0f)
+            apply()
+        }
+    }
+
+    fun resetSessionLean() {
+        sessionMaxLeft.value = 0f
+        sessionMaxRight.value = 0f
+        sessionMaxPitch.value = 0f
+    }
+
+    fun resetSessionPitch() {
+        sessionMaxPitch.value = 0f
+    }
+
+    fun resetRollingMaxLean() {
+        rollingMaxLeft.value = 0f
+        rollingMaxRight.value = 0f
+        rollingMax1000m.value = 0f
+    }
+
+    fun resetMaxLean1000m() {
+        rollingMax1000m.value = 0f
+    }
+
+    fun resetAllTimeRecords() {
+        resetAllTimeLean()
+        resetMaxPitch()
+    }
+
+    fun resetSessionStats() {
+        sessionPoints.value = emptyList()
+        detectedCorners.value = emptyList()
+        resetSessionLean()
+        resetRollingMaxLean()
+        currentState = RideState.STRAIGHT
+        activeCorner = null
+        cdEntryCount = 0
+        cdExitCount = 0
+        cdEntryTime = 0L
+        lastLocation = null
+        lastLoggedLocation = null
+        currentSessionStartTime = 0L
+        currentVideoPath = null
+        currentVideoStartTime = null
+    }
+
+    fun resetCornerCount() {
+        detectedCorners.value = emptyList()
+    }
+
+
+
+    private fun multiply3x3(a: FloatArray, b: FloatArray): FloatArray {
+        val result = FloatArray(9)
+        for (i in 0..2) {
+            for (j in 0..2) {
+                result[i * 3 + j] = a[i * 3 + 0] * b[0 * 3 + j] +
+                                    a[i * 3 + 1] * b[1 * 3 + j] +
+                                    a[i * 3 + 2] * b[2 * 3 + j]
+            }
+        }
+        return result
+    }
+
+    private fun transpose3x3(a: FloatArray): FloatArray {
+        val result = FloatArray(9)
+        for (i in 0..2) {
+            for (j in 0..2) {
+                result[j * 3 + i] = a[i * 3 + j]
+            }
+        }
+        return result
+    }
+
+    private fun displayRotationMatrix(rotation: Int) = when (rotation) {
+        Surface.ROTATION_90  -> floatArrayOf( 0f,-1f, 0f,  1f, 0f, 0f,  0f, 0f, 1f)
+        Surface.ROTATION_180 -> floatArrayOf(-1f, 0f, 0f,  0f,-1f, 0f,  0f, 0f, 1f)
+        Surface.ROTATION_270 -> floatArrayOf( 0f, 1f, 0f, -1f, 0f, 0f,  0f, 0f, 1f)
+        else                 -> floatArrayOf( 1f, 0f, 0f,  0f, 1f, 0f,  0f, 0f, 1f)
+    }
+
+    private fun multiplyMatrixVector(matrix: FloatArray, vector: FloatArray): FloatArray {
+        return floatArrayOf(
+            matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
+            matrix[3] * vector[0] + matrix[4] * vector[1] + matrix[5] * vector[2],
+            matrix[6] * vector[0] + matrix[7] * vector[1] + matrix[8] * vector[2]
+        )
+    }
+
+    /** Shows a brief Toast on the main thread (safe to call from the sensor thread). */
+    private fun showShortMessage(text: String) {
+        mainHandler.post { Toast.makeText(applicationContext, text, Toast.LENGTH_SHORT).show() }
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event == null) return
+
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        @Suppress("DEPRECATION")
+        val displayRotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                display?.rotation ?: windowManager.defaultDisplay.rotation
+            } catch (e: Exception) {
+                windowManager.defaultDisplay.rotation
+            }
+        } else {
+            windowManager.defaultDisplay.rotation
+        }
+
+        if (displayRotation != lastDisplayRotation) {
+            val delta = multiply3x3(
+                transpose3x3(displayRotationMatrix(lastDisplayRotation)),
+                displayRotationMatrix(displayRotation)
+            )
+            rDeviceToBike = multiply3x3(rDeviceToBike, delta)
+            lastDisplayRotation = displayRotation
+            if (isCalibrated.value) {
+                isCalibrated.value = false
+                androidx.preference.PreferenceManager
+                    .getDefaultSharedPreferences(this)
+                    .edit().putBoolean("isCalibrated", false).apply()
+                showShortMessage("Orientation changed — calibration lost. Please recalibrate.")
+            }
+            calibrationWarmupUntil = System.currentTimeMillis() + 2500L
+            Log.d("TelemetryService", "Display rotation changed to $displayRotation — axes remapped, calibration cleared")
+        }
+
+        val speedKmh = currentSpeed.value
+        val gpsSpeedMPS = (speedKmh / 3.6).toFloat()
+
+        if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
+            if (gpsSpeedMPS <= 0.5f && !forceFilterStandstill.value) {
+                return
+            }
+
+            val timestamp = event.timestamp
+            if (lastTimestamp == 0L) {
+                lastTimestamp = timestamp
+                return
+            }
+            val dt = (timestamp - lastTimestamp) / 1000000000f
+            lastTimestamp = timestamp
+
+            if (dt <= 0f || dt > 0.1f) return
+
+            // Map gyroscope from physical device frame directly to bike frame
+            val omegaBike = multiplyMatrixVector(rDeviceToBike, event.values)
+            // omegaBike[0] is pitch rate (Bike X-axis)
+            // omegaBike[1] is roll rate (Bike Y-axis)
+            // omegaBike[2] is yaw rate (Bike Z-axis)
+            
+            // Standard right hand rule:
+            // Thumb Right (Bike X) -> Pitch Up is positive.
+            // Thumb Forward (Bike Y) -> Roll Right is positive.
+            val gyroPitchRateDeg = Math.toDegrees(omegaBike[0].toDouble()).toFloat()
+            val gyroRollRateDeg = Math.toDegrees(omegaBike[1].toDouble()).toFloat()
+
+            // 1. High frequency gyroscope integration
+            val integratedLean = leanAngle + (gyroRollRateDeg * dt)
+            val integratedPitch = pitchAngle + (gyroPitchRateDeg * dt)
+
+            // 2. Langsame GPS-Referenz (GPS speed and Yaw Rate centripetal calculation)
+            val gravity = 9.81f
+            // Left turn = positive omegaBike[2], causes negative gpsLeanRad (Left Lean)
+            val gpsLeanRad = kotlin.math.atan((gpsSpeedMPS * -omegaBike[2]) / gravity)
+            val gpsLeanDeg = Math.toDegrees(gpsLeanRad.toDouble()).toFloat()
+
+            // 3. Fusion (Complementary Filter)
+            if (hasAbsoluteTarget) {
+                val level = vibrationFiltering.value
+                val alphaFast: Float
+                val alphaSlow: Float
+                when (level) {
+                    "Very Low" -> {
+                        // Very low filtering, prioritizes hardware reference more heavily. Fast drift correction.
+                        alphaFast = 0.992f
+                        alphaSlow = 0.985f
+                    }
+                    "Low" -> {
+                        alphaFast = 0.995f
+                        alphaSlow = 0.990f
+                    }
+                    "High" -> {
+                        alphaFast = 0.999f
+                        alphaSlow = 0.998f
+                    }
+                    "Very High" -> {
+                        // Very high filtering, strongly relies on gyroscope integration. High immunity to vibration, slow drift correction.
+                        alphaFast = 0.9998f
+                        alphaSlow = 0.999f
+                    }
+                    else -> { // Standard
+                        alphaFast = 0.998f
+                        alphaSlow = 0.995f
+                    }
+                }
+
+                val isMovingFast = kotlin.math.abs(gyroRollRateDeg) > 5.0f
+                val leanAlpha = if (isMovingFast) alphaFast else alphaSlow // lean keeps vibration-tuned gain
+
+                // Pitch: correct far harder toward the bounded absolute reference so gyro-integration
+                // drift can't ratchet up during aggressive cornering (root cause of false "extreme
+                // pitch" mount-slip stops). Real bike pitch is low-frequency, so it doesn't need the
+                // gyro-dominant, vibration-immune treatment lean needs. Cap the gyro trust.
+                val basePitchAlpha = leanAlpha.coerceAtMost(0.99f) // >=1% reference pull / sample
+                // During fast left/right flicks the pitch gyro channel is cross-axis contaminated by
+                // roll rate, so lean even harder on the absolute reference.
+                val pitchAlpha = if (kotlin.math.abs(gyroRollRateDeg) > 60f) 0.95f else basePitchAlpha
+
+                // Blend gravity and centripetal lean to prevent linear acceleration from causing drift via yaw bias
+                val yawRateAbs = kotlin.math.abs(omegaBike[2])
+                val turnFactor = ((yawRateAbs - 0.02f) * 16.66f).coerceIn(0f, 1f)
+                val referenceLean = (turnFactor * gpsLeanDeg) + ((1f - turnFactor) * lastTargetLean)
+
+                leanAngle = (leanAlpha * integratedLean) + ((1f - leanAlpha) * referenceLean)
+                pitchAngle = (pitchAlpha * integratedPitch) + ((1f - pitchAlpha) * lastTargetPitch)
+            } else {
+                leanAngle = integratedLean
+                pitchAngle = integratedPitch
+            }
+
+            // 4. Begrenzung auf physikalische Maximalwerte
+            val finalLean = leanAngle.coerceIn(-65f, 65f)
+            val finalPitch = pitchAngle.coerceIn(-20f, 90f)
+
+            // 5. Update live dashboard flows instantly
+            currentLean.value = finalLean
+            currentPitch.value = finalPitch
+            isWheelieAlert.value = finalPitch > WHEELIE_THRESHOLD
+
+            // Auto-resume when lean threshold reached while paused
+            if (isPaused.value && autoResumeOnLean.value && kotlin.math.abs(finalLean) >= 30f) {
+                startRecording()
+            }
+
+            // 6. Update recording metrics and stats
+            if (isRecording.value && !isPaused.value) {
+                if (finalLean < allTimeMaxLeft.value) allTimeMaxLeft.value = finalLean
+                if (finalLean > allTimeMaxRight.value) allTimeMaxRight.value = finalLean
+                
+                if (finalPitch >= 10.0f && finalPitch > allTimeMaxPitch.value) {
+                    allTimeMaxPitch.value = finalPitch
+                }
+
+                if (finalLean < sessionMaxLeft.value) sessionMaxLeft.value = finalLean
+                if (finalLean > sessionMaxRight.value) sessionMaxRight.value = finalLean
+                if (finalPitch > sessionMaxPitch.value) {
+                    sessionMaxPitch.value = finalPitch
+                }
+                
+                if (finalLean < rollingMaxLeft.value) {
+                    rollingMaxLeft.value = finalLean
+                }
+                if (finalLean > rollingMaxRight.value) {
+                    rollingMaxRight.value = finalLean
+                }
+
+                processTelemetrySnapshop(finalLean, finalPitch)
+            }
+            return
+        }
+
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+
+        val rDeviceToWorld = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(rDeviceToWorld, event.values)
+
+        if (isCalibrating) {
+            // Find Display Y vector in Device Frame
+            val vDispY = when (displayRotation) {
+                Surface.ROTATION_90 -> floatArrayOf(1f, 0f, 0f)
+                Surface.ROTATION_180 -> floatArrayOf(0f, -1f, 0f)
+                Surface.ROTATION_270 -> floatArrayOf(-1f, 0f, 0f)
+                else -> floatArrayOf(0f, 1f, 0f)
+            }
+            // Find Device -Z vector (back of phone)
+            val vMinusZ = floatArrayOf(0f, 0f, -1f)
+            
+            // Map both to World Frame
+            val wDispY = multiplyMatrixVector(rDeviceToWorld, vDispY)
+            val wMinusZ = multiplyMatrixVector(rDeviceToWorld, vMinusZ)
+            
+            // Project combined "Forward" intent to the horizontal plane (Z=0)
+            val fx = wDispY[0] + wMinusZ[0]
+            val fy = wDispY[1] + wMinusZ[1]
+            
+            val len = kotlin.math.sqrt((fx * fx + fy * fy).toDouble()).toFloat()
+            val byW_X = if (len > 0.001f) fx / len else 0f
+            val byW_Y = if (len > 0.001f) fy / len else 1f
+            
+            // Construct R_bike_to_world matrix
+            // Bike X (Right) = (byW_Y, -byW_X, 0)
+            // Bike Y (Forward) = (byW_X, byW_Y, 0)
+            // Bike Z (Up) = (0, 0, 1)
+            val rBikeToWorld = floatArrayOf(
+                byW_Y,  byW_X, 0f,
+               -byW_X,  byW_Y, 0f,
+                0f,     0f,    1f
+            )
+            
+            // R_device_to_bike = R_bike_to_world^T * R_device_to_world
+            val rWorldToBike = transpose3x3(rBikeToWorld)
+            rDeviceToBike = multiply3x3(rWorldToBike, rDeviceToWorld)
+            isCalibrating = false
+
+            val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+            val editor = prefs.edit()
+            for (i in 0..8) {
+                editor.putFloat("rDeviceToBike_$i", rDeviceToBike[i])
+            }
+            editor.putBoolean("isCalibrated", true)
+            editor.putLong("calibration_timestamp", System.currentTimeMillis())
+            editor.apply()
+            isCalibrated.value = true
+            calibrationWarmupUntil = System.currentTimeMillis() + 2500L
+            speedInterpolationEngine.onCalibrationComplete()
+        }
+
+        // R_bike_to_world = R_device_to_world * R_device_to_bike^T
+        val rBikeToWorld = multiply3x3(rDeviceToWorld, transpose3x3(rDeviceToBike))
+
+        // Extract pitch and roll from the R_bike_to_world matrix
+        // Row 3 (indices 6, 7, 8) represents the Up vector in Bike frame
+        val upX = rBikeToWorld[6]
+        val upY = rBikeToWorld[7]
+        val upZ = rBikeToWorld[8]
+
+        // Roll (Lean): positive when leaning right -> Up vector moves to left (-X in bike frame)
+        // atan2(-upX, upZ) is mathematically positive for Right Lean
+        val rawLean = Math.toDegrees(Math.atan2(-upX.toDouble(), upZ.toDouble())).toFloat()
+        
+        // Pitch: positive when pitching up (wheelie) -> Up vector moves backward (-Y in bike frame)
+        // asin(-upY) is mathematically positive for Wheelie
+        val rawPitch = Math.toDegrees(kotlin.math.asin(-upY.toDouble().coerceIn(-1.0, 1.0))).toFloat()
+
+        // Compass Heading
+        val orientationAngles = FloatArray(3)
+        SensorManager.getOrientation(rBikeToWorld, orientationAngles)
+        val azimuth = Math.toDegrees(orientationAngles[0].toDouble()).toFloat()
+
+        if (speedKmh <= 2.0 || lastLocation?.hasBearing() == false) {
+            currentHeading.value = (azimuth + 360) % 360
+        }
+
+        val correctedLean = rawLean
+        val correctedPitch = rawPitch
+
+        // Store the target values from rotation vector
+        lastTargetLean = correctedLean
+        lastTargetPitch = correctedPitch
+        hasAbsoluteTarget = true
+
+        // Im Stand oder bei Hand-Tests: Werte direkt und OHNE Verzögerung aktualisieren! (außer erzwungen im Dev-Mode)
+        if (gpsSpeedMPS <= 0.5f && !forceFilterStandstill.value) {
+            val finalLean = correctedLean.coerceIn(-65f, 65f)
+            val finalPitch = correctedPitch.coerceIn(-20f, 90f)
+
+            leanAngle = finalLean
+            pitchAngle = finalPitch
+
+            // Update live dashboard flows instantly
+            currentLean.value = finalLean
+            currentPitch.value = finalPitch
+            isWheelieAlert.value = finalPitch > WHEELIE_THRESHOLD
+
+            // Update recording metrics and stats if active
+            if (isRecording.value && !isPaused.value) {
+                if (finalLean < allTimeMaxLeft.value) allTimeMaxLeft.value = finalLean
+                if (finalLean > allTimeMaxRight.value) allTimeMaxRight.value = finalLean
+                
+                if (finalPitch >= 10.0f && finalPitch > allTimeMaxPitch.value) {
+                    allTimeMaxPitch.value = finalPitch
+                }
+
+                if (finalLean < sessionMaxLeft.value) sessionMaxLeft.value = finalLean
+                if (finalLean > sessionMaxRight.value) sessionMaxRight.value = finalLean
+                if (finalPitch > sessionMaxPitch.value) {
+                    sessionMaxPitch.value = finalPitch
+                }
+                
+                if (finalLean < rollingMaxLeft.value) {
+                    rollingMaxLeft.value = finalLean
+                }
+                if (finalLean > rollingMaxRight.value) {
+                    rollingMaxRight.value = finalLean
+                }
+
+                processTelemetrySnapshop(finalLean, finalPitch)
+            }
+        }
+    }
+
+    private fun processTelemetrySnapshop(lean: Float, pitch: Float) {
+        val loc = lastLocation ?: return  // no GPS fix yet — don't save phantom points
+        if (loc.hasAccuracy() && loc.accuracy > 50f) return  // GPS accuracy too poor
+        val currentTime = System.currentTimeMillis()
+
+        val prevPoint = sessionPoints.value.lastOrNull()
+        val distance = if (prevPoint != null) {
+            val dtSeconds = (currentTime - prevPoint.timestamp) / 1000.0
+            val speedMps = currentSpeed.value / 3.6 // speed is in km/h, convert to m/s
+            speedMps * dtSeconds
+        } else {
+            0.0
+        }
+
+        val point = TelemetryPoint(
+            timestamp = currentTime,
+            latitude = loc.latitude,
+            longitude = loc.longitude,
+            speedKmh = currentSpeed.value,
+            leanAngle = lean,
+            pitchAngle = pitch,
+            distanceDelta = distance
+        )
+
+        val updatedList = sessionPoints.value + point
+        sessionPoints.value = updatedList
+
+        // Calculate rolling max lean in the target distance
+        var accumulatedDistance = 0.0
+        var maxLeanVal = 0f
+        val targetDist = rollingDistanceTarget.value.toDouble()
+        for (i in updatedList.indices.reversed()) {
+            val pt = updatedList[i]
+            accumulatedDistance += pt.distanceDelta
+            val currentAbsLean = kotlin.math.abs(pt.leanAngle)
+            if (currentAbsLean > maxLeanVal) {
+                maxLeanVal = currentAbsLean
+            }
+            if (accumulatedDistance >= targetDist) {
+                break
+            }
+        }
+        rollingMax1000m.value = maxLeanVal
+
+        // Evaluate State Machine for Corners
+        val absLean = kotlin.math.abs(lean)
+        val currentIndex = updatedList.lastIndex
+        val aboveSpeedGate = currentSpeed.value >= 25.0
+
+        when (currentState) {
+            RideState.STRAIGHT -> {
+                // Speed gate: suppress corner entry below 25 km/h
+                if (aboveSpeedGate && absLean >= 10.0f) {
+                    cdEntryCount++
+                    // Entry confirmation: require 3 consecutive samples above threshold
+                    if (cdEntryCount >= 3) {
+                        currentState = RideState.IN_CORNER
+                        cdEntryCount = 0
+                        cdExitCount = 0
+                        cdEntryTime = System.currentTimeMillis()
+                        val startIdx = (currentIndex - 2).coerceAtLeast(0)
+                        val newCorner = CornerEvent(
+                            id = detectedCorners.value.size + 1,
+                            startIndex = startIdx,
+                            maxLeanIndex = startIdx
+                        )
+                        if (lean < 0) newCorner.maxLeftLean = lean else newCorner.maxRightLean = lean
+                        activeCorner = newCorner
+                        detectedCorners.value = detectedCorners.value + newCorner
+                    }
+                } else {
+                    cdEntryCount = 0
+                }
+            }
+            RideState.IN_CORNER -> {
+                activeCorner?.let { corner ->
+                    // Track maximum lean
+                    if (lean < 0 && lean < corner.maxLeftLean) {
+                        corner.maxLeftLean = lean
+                        corner.maxLeanIndex = currentIndex
+                    } else if (lean > 0 && lean > corner.maxRightLean) {
+                        corner.maxRightLean = lean
+                        corner.maxLeanIndex = currentIndex
+                    }
+
+                    // Exit debounce: require 3 consecutive samples below exit threshold
+                    if (absLean < 7.0f) {
+                        cdExitCount++
+                        if (cdExitCount >= 3) {
+                            val peakLean = maxOf(kotlin.math.abs(corner.maxLeftLean), corner.maxRightLean)
+                            val duration = System.currentTimeMillis() - cdEntryTime
+
+                            val qualified = peakLean >= minCornerPeakLean.value && duration >= 1000L
+
+                            if (qualified) {
+                                corner.endIndex = currentIndex
+                                currentState = RideState.STRAIGHT
+                                activeCorner = null
+                                cdEntryCount = 0
+                                cdExitCount = 0
+                                detectedCorners.value = detectedCorners.value.toList()
+
+                                if (isRecording.value && !isPaused.value) {
+                                    val closedCorner = corner
+                                    val pointsSnapshot = updatedList.toList()
+                                    val sessionId = "Session_${currentSessionStartTime}"
+                                    serviceScope.launch {
+                                        val result = cornerMatchingEngine.matchOrCreateCorner(
+                                            closedCorner, pointsSnapshot, sessionId
+                                        ) ?: return@launch
+
+                                        AppDatabase.getInstance(this@TelemetryService).cornerDao()
+                                            .insertSessionCorner(SessionCornerEntity(
+                                                sessionId = sessionId,
+                                                cornerId = result.corner.id,
+                                                leanAchieved = result.leanAchieved,
+                                                speedAtPeak = result.speedAtPeak,
+                                                cornerTimestamp = System.currentTimeMillis()
+                                            ))
+
+                                        val comparison = PbComparison(
+                                            cornerId = result.corner.id,
+                                            pbLean = if (result.isNewPb) result.leanAchieved
+                                                     else result.existingPb?.bestLean ?: result.leanAchieved,
+                                            achievedLean = result.leanAchieved,
+                                            isNewPb = result.isNewPb
+                                        )
+                                        livePbComparison.value = comparison
+
+                                        if (result.isNewPb) {
+                                            voiceCoach.trigger(VoiceCoach.CoachEvent.NEW_PB, result.leanAchieved)
+                                        } else {
+                                            val pb = result.existingPb
+                                            if (pb != null && result.leanAchieved >= pb.bestLean * 0.93f) {
+                                                voiceCoach.trigger(VoiceCoach.CoachEvent.NEAR_PB,
+                                                    pb.bestLean - result.leanAchieved)
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Discard: corner did not meet peak or duration requirements
+                                currentState = RideState.STRAIGHT
+                                activeCorner = null
+                                cdEntryCount = 0
+                                cdExitCount = 0
+                                detectedCorners.value = detectedCorners.value.dropLast(1)
+                            }
+                        }
+                    } else {
+                        cdExitCount = 0
+                    }
+                }
+            }
+        }
+    }
+
+    // 10Hz Adafruit USB Serial Connection Setup
+    private fun initUsbGps() {
+        if (usbPort != null && usbPort!!.isOpen) return
+        val manager = getSystemService(Context.USB_SERVICE) as android.hardware.usb.UsbManager
+        val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(manager)
+        if (availableDrivers.isEmpty()) return
+
+        val driver = availableDrivers[0]
+        val connection = manager.openDevice(driver.device) ?: return
+        val port = driver.ports[0] // Adafruit usually assigns to channel 0
+
+        try {
+            port.open(connection)
+            port.setParameters(9600, 8, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1)
+            usbPort = port
+            isUsbGpsConnected.value = true
+
+            // Read loop for incoming 10Hz NMEA Strings
+            usbJob = CoroutineScope(Dispatchers.IO).launch {
+                val buffer = ByteArray(1024)
+                var nmeaBuilder = StringBuilder()
+                while (isActive) {
+                    val numBytes = port.read(buffer, 1000)
+                    if (numBytes > 0) {
+                        val chunk = String(buffer, 0, numBytes)
+                        nmeaBuilder.append(chunk)
+
+                        if (nmeaBuilder.contains("\n")) {
+                            val lines = nmeaBuilder.toString().split("\r\n")
+                            for (i in 0 until lines.size - 1) {
+                                parseNmeaString(lines[i])
+                            }
+                            nmeaBuilder = StringBuilder(lines.last())
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+    }
+
+    private fun parseNmeaString(nmea: String) {
+        // Minimal absolute parsing framework targeting $GPRMC or $GPGGA sentences at 10Hz
+        try {
+            if (nmea.startsWith("\$GPRMC")) {
+                val tokens = nmea.split(",")
+                if (tokens.size > 8 && (tokens[2] == "A" || tokens[2] == "V")) { // Accept both valid and void for testing stability
+                    val rawLat = tokens[3]
+                    val latDir = tokens[4]
+                    val rawLon = tokens[5]
+                    val lonDir = tokens[6]
+                    val speedKnots = tokens[7].toDoubleOrNull() ?: 0.0
+
+                    if (rawLat.isNotEmpty() && rawLon.isNotEmpty()) {
+                        val lat = convertNmeaToDecimal(rawLat, latDir)
+                        val lon = convertNmeaToDecimal(rawLon, lonDir)
+
+                        val mockLocation = Location("ExternalUSBGPS").apply {
+                            latitude = lat
+                            longitude = lon
+                            speed = (speedKnots * 1.852 / 3.6).toFloat() // Knots to m/s
+                            time = System.currentTimeMillis()
+                        }
+                        onLocationChanged(mockLocation)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("TelemetryService", "Error parsing NMEA: ${e.message}")
+        }
+    }
+
+    private fun convertNmeaToDecimal(degreeMinutes: String, direction: String): Double {
+        if (degreeMinutes.isEmpty()) return 0.0
+        val dotIndex = degreeMinutes.indexOf('.')
+        val degreeLength = dotIndex - 2
+        val degrees = degreeMinutes.substring(0, degreeLength).toDouble()
+        val minutes = degreeMinutes.substring(degreeLength).toDouble()
+        var decimal = degrees + (minutes / 60.0)
+        if (direction == "S" || direction == "W") decimal = -decimal
+        return decimal
+    }
+
+    private fun saveSessionLocally(stopReason: String? = null) {
+        val dir = getExternalFilesDir("sessions") ?: return
+        if (!dir.exists()) dir.mkdirs()
+
+        val endTime = System.currentTimeMillis()
+        val session = RideSession(
+            id = "Session_${currentSessionStartTime}",
+            startTime = currentSessionStartTime,
+            endTime = endTime,
+            points = sessionPoints.value,
+            corners = detectedCorners.value,
+            maxLeanLeft = sessionMaxLeft.value,
+            maxLeanRight = sessionMaxRight.value,
+            maxPitch = sessionMaxPitch.value,
+            stopReason = stopReason,
+            videoPath = currentVideoPath?.takeIf { File(it).exists() },
+            videoStartTime = currentVideoStartTime
+        )
+
+        val filename = "${session.id}.json"
+        val file = File(dir, filename)
+        
+        try {
+            val json = gson.toJson(session)
+            file.writeText(json)
+            loadSessions()
+        } catch (e: Exception) {
+            Log.e("TelemetryService", "Error saving session: ${e.message}")
+        }
+    }
+
+    fun saveSessionToCsv(): File {
+        val dir = getExternalFilesDir(null)
+        val file = File(dir, "RideTelemetry_${System.currentTimeMillis()}.csv")
+        FileWriter(file).use { writer ->
+            writer.write("Timestamp,Latitude,Longitude,SpeedKmh,LeanAngle,PitchAngle\n")
+            sessionPoints.value.forEach {
+                writer.write("${it.timestamp},${it.latitude},${it.longitude},${it.speedKmh},${it.leanAngle},${it.pitchAngle}\n")
+            }
+        }
+        return file
+    }
+
+    fun saveSessionToCsv(session: RideSession): File {
+        val dir = getExternalFilesDir(null)
+        val file = File(dir, "RideTelemetry_${session.id}.csv")
+        FileWriter(file).use { writer ->
+            writer.write("Timestamp,Latitude,Longitude,SpeedKmh,LeanAngle,PitchAngle\n")
+            session.points.forEach {
+                writer.write("${it.timestamp},${it.latitude},${it.longitude},${it.speedKmh},${it.leanAngle},${it.pitchAngle}\n")
+            }
+        }
+        return file
+    }
+
+    fun exportAllSessionsToCsv(): File? {
+        val sessions = pastSessions.value
+        if (sessions.isEmpty()) return null
+
+        val dir = getExternalFilesDir(null)
+        val file = File(dir, "AllRides_${System.currentTimeMillis()}.csv")
+        FileWriter(file).use { writer ->
+            writer.write("SessionID,Timestamp,Latitude,Longitude,SpeedKmh,LeanAngle,PitchAngle\n")
+            sessions.forEach { session ->
+                session.points.forEach { pt ->
+                    writer.write("${session.id},${pt.timestamp},${pt.latitude},${pt.longitude},${pt.speedKmh},${pt.leanAngle},${pt.pitchAngle}\n")
+                }
+            }
+        }
+        return file
+    }
+
+    private val gpsTimestamps = ArrayDeque<Long>()
+
+    override fun onLocationChanged(location: Location) {
+        lastLocation = location
+        currentLocation.value = location
+        val speedKmh = location.speed * 3.6
+        if (location.hasBearing() && location.speed > 0.5f) {
+            currentHeading.value = location.bearing
+        }
+        // Feed GPS speed to interpolation engine — it updates currentSpeed and checks arm threshold
+        speedInterpolationEngine.onGpsFix(speedKmh)
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        gpsTimestamps.addLast(now)
+        while (gpsTimestamps.isNotEmpty() && now - gpsTimestamps.first() > 2000L) gpsTimestamps.removeFirst()
+        gpsUpdateRateHz.value = if (gpsTimestamps.size >= 2) gpsTimestamps.size / 2f else 0f
+    }
+
+    private fun startForegroundNotification() {
+        val channelId = "telemetry_channel"
+        val channel = NotificationChannel(channelId, "Telemetry Engine", NotificationManager.IMPORTANCE_LOW)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Leanster")
+            .setContentText("Sensor telemetry active")
+            .setSmallIcon(R.drawable.ic_launcher_fg_white)
+            .build()
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(101, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(101, notification)
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    fun getVoiceCoach(): VoiceCoach = voiceCoach
+
+    override fun onDestroy() {
+        usbJob?.cancel()
+        serviceScope.cancel()
+        voiceCoach.shutdown()
+        calibrationToneGen?.release()
+        calibrationToneGen = null
+        speedInterpolationEngine.stop()
+        try { usbPort?.close() } catch (e: Exception) {}
+        sensorManager.unregisterListener(this)
+        try { locationManager.removeUpdates(this) } catch (e: Exception) {}
+        super.onDestroy()
+    }
+}

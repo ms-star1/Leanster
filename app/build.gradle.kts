@@ -16,11 +16,11 @@ val keystoreProperties = Properties().apply {
 }
 
 android {
-    namespace = "com.beispiel.ridetracker"
+    namespace = "com.bike.leanster"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.ridetracker.ride"
+        applicationId = "com.leanster.app"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

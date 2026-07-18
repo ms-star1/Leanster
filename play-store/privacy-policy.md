@@ -1,7 +1,7 @@
 # Privacy Policy — Leanster
 
 **Effective date:** 18 July 2026
-**App:** Leanster (package `com.ridetracker.ride`)
+**App:** Leanster (package `com.leanster.app`)
 **Developer contact:** michasteinauer@gmail.com
 
 > **Live at:** https://ms-star1.github.io/Leanster/ — this is the URL to paste into Google Play Console → *Store presence → Privacy policy*. (Source: `docs/index.html`, served via GitHub Pages.) Replace the contact email if you want to use a dedicated address.

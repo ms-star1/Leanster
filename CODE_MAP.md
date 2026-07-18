@@ -1,6 +1,6 @@
-# RideTracker Code Map Index
+# Leanster Code Map Index
 
-This file serves as a quick lookup map of the RideTracker codebase structure.
+This file serves as a quick lookup map of the Leanster codebase structure.
 
 ## Core App Flow & Navigation
 - **`MainActivity.kt`**: Entry point. Service binding (`TelemetryService`), orientation locking, location/notification permission handling, and tab navigation (`currentTab` 0: Dashboard, 1: Settings, 2: Post-Ride Save/Discard, 3: History Menu).

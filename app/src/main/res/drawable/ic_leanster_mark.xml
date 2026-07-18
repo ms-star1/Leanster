@@ -1,0 +1,44 @@
+<!--
+  Leanster brand mark — circular "lean-angle" badge.
+  Monochrome and tintable (default NeonCyan); recolor via android:tint or a
+  Compose ColorFilter for light-background variants. Geometry mirrors the
+  320x320 SVG in the "Leanster Logo Exports" design sheet.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="320"
+    android:viewportHeight="320"
+    android:tint="#00F5D4">
+
+    <!-- Outer ring -->
+    <path
+        android:pathData="M 30,160 a 130,130 0 1 0 260 0 a 130,130 0 1 0 -260 0"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:fillColor="@android:color/transparent" />
+
+    <!-- Graduation ticks flanking the top (+/-45 deg) -->
+    <path
+        android:pathData="M 254.75,65.25 L 234.95,85.05"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="8"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 65.25,65.25 L 85.05,85.05"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="8"
+        android:strokeLineCap="round" />
+
+    <!-- Lean angle line (32 deg), trimmed to the inner circle -->
+    <path
+        android:pathData="M 54.85,94.29 L 265.15,225.71"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round" />
+
+    <!-- Lean indicator dot on the ring -->
+    <path
+        android:pathData="M 211.77,53.15 a 15,15 0 1 0 30 0 a 15,15 0 1 0 -30 0"
+        android:fillColor="#FFFFFF" />
+</vector>

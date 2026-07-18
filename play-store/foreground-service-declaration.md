@@ -1,6 +1,6 @@
 # Foreground Service Declaration — Google Play Console
 
-App: **Leanster** (`com.ridetracker.ride`)
+App: **Leanster** (`com.leanster.app`)
 Location in console: *App content → Foreground service permissions*
 
 > Google Play requires you to declare each foreground-service type your app uses, give a justification, and (for most types) attach a short screen recording showing the feature. Leanster declares two FGS types.

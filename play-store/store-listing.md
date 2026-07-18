@@ -1,6 +1,6 @@
 # Store Listing Copy — Leanster
 
-App: **Leanster** (`com.ridetracker.ride`)
+App: **Leanster** (`com.leanster.app`)
 Console location: *Grow → Store presence → Main store listing*
 
 > Character limits are enforced by Play. Counts below are approximate — verify in the console. Pick one title/short-description option or mix as you like.

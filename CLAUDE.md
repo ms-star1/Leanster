@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew connectedAndroidTest
 
 # Run a single unit test class
-./gradlew testDebugUnitTest --tests "com.beispiel.ridetracker.ExampleUnitTest"
+./gradlew testDebugUnitTest --tests "com.bike.leanster.ExampleUnitTest"
 
 # Clean build
 ./gradlew clean

@@ -1,6 +1,6 @@
 # Content Rating & Target Audience — Google Play Console
 
-App: **Leanster** (`com.ridetracker.ride`)
+App: **Leanster** (`com.leanster.app`)
 Location in console: *App content → Content ratings* and *App content → Target audience and content*
 
 > The content-rating questionnaire (run by IARC) generates your age ratings automatically from your answers. Below are the correct answers for Leanster, plus the target-audience settings.
