@@ -10,6 +10,7 @@ kotlin = "2.4.0"
 ksp = "2.3.9"
 room = "2.7.1"
 composeBom = "2026.06.00"
+camerax = "1.4.2"
 gson = "2.14.0"
 maplibre = "13.3.0"
 preferenceKtx = "1.2.1"
@@ -39,6 +40,12 @@ usb-serial = { group = "com.github.mik3y", name = "usb-serial-for-android", vers
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+androidx-camera-video = { group = "androidx.camera", name = "camera-video", version.ref = "camerax" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
+androidx-camera-effects = { group = "androidx.camera", name = "camera-effects", version.ref = "camerax" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

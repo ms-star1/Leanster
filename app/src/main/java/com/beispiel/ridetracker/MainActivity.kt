@@ -28,7 +28,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -92,6 +97,7 @@ class MainActivity : ComponentActivity() {
         val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.CAMERA,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -365,8 +371,17 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+                        4 -> {
+                            BackHandler(enabled = true) { currentTab = 0 }
+                            CameraRecordingView(
+                                service = service,
+                                highlightColor = highlightColor,
+                                isMetric = isMetric,
+                                onBack = { currentTab = 0 },
+                            )
+                        }
                     }
-                    
+
                     LaunchedEffect(isRecording) {
                         if (((!isRecording) && ((currentTab == 0) || (currentTab == 1))) && (service.sessionPoints.value.isNotEmpty())) {
                             currentTab = 2
@@ -400,6 +415,24 @@ class MainActivity : ComponentActivity() {
                             highlightColor = highlightColor,
                             onDismiss = { showOnboardingCalibGuide = false }
                         )
+                    }
+
+                    // Quick-launch for the camera / burned-in-overlay recorder (dashboard only)
+                    if (currentTab == 0 && !isRecording) {
+                        IconButton(
+                            onClick = { currentTab = 4 },
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 16.dp, bottom = 24.dp)
+                                .size(48.dp)
+                                .background(SurfaceCard.copy(alpha = 0.7f), CircleShape),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Videocam,
+                                contentDescription = "Record video with overlay",
+                                tint = highlightColor,
+                            )
+                        }
                     }
                 } else {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
