@@ -28,7 +28,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -79,21 +84,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
+        // Sync the launcher icon to the saved brand preference on every launch
+        val savedColor = PreferenceManager.getDefaultSharedPreferences(this)
+            .getString("highlight_color", "Kawasaki") ?: "Kawasaki"
+        AppIconSwitcher.switch(this, savedColor)
+
         enableEdgeToEdge()
 
-        // Disable system auto-rotation by programmatically locking screen orientation based on user default mode setting
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val defaultMode = prefs.getString("default_launch_mode", "Portrait") ?: "Portrait"
-        requestedOrientation = if (defaultMode == "Landscape") {
-            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
+        // System auto-rotation will be controlled dynamically by the active screen
 
         val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -102,7 +107,7 @@ class MainActivity : ComponentActivity() {
         requestPermissionLauncher.launch(permissions.toTypedArray())
 
         setContent {
-            RideTrackerTheme {
+            LeansterTheme {
                 MainContent()
             }
         }
@@ -110,30 +115,79 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun MainContent() {
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(LocalContext.current)
+
         var currentTab by rememberSaveable { mutableIntStateOf(value = 0) }
         var isMetric by rememberSaveable { mutableStateOf(value = true) }
-        var highlightColorName by rememberSaveable { mutableStateOf("Cyan") }
-        
-        val highlightColor = when (highlightColorName) {
-            "Yamaha Blue" -> YamahaBlue
-            "Ducati Red" -> DucatiRed
-            "Kawasaki Green" -> KawasakiGreen
-            "Pure White" -> PureWhiteHighlight
-            else -> NeonCyan
+        var highlightColorName by rememberSaveable {
+            mutableStateOf(prefs.getString("highlight_color", "Kawasaki") ?: "Kawasaki")
         }
-        
+        val context = LocalContext.current
+        val onColorChange: (String) -> Unit = { name ->
+            highlightColorName = name
+            prefs.edit().putString("highlight_color", name).apply()
+            AppIconSwitcher.switch(context, name)
+        }
+
+        val highlightColor = when (highlightColorName) {
+            "Kawasaki" -> KawasakiGreen
+            "Ducati"   -> DucatiRed
+            "Yamaha"   -> YamahaBlue
+            "KTM"      -> KtmOrange
+            "Honda"    -> HondaRed
+            "BMW"      -> BmwBlue
+            "Triumph"  -> TriumphGold
+            "Husqvarna"-> HusqvarnaYellow
+            "Cyan"     -> NeonCyan
+            "White"    -> PureWhiteHighlight
+            // legacy names kept for saved state compat
+            "Kawasaki Green" -> KawasakiGreen
+            "Yamaha Blue"    -> YamahaBlue
+            "Ducati Red"     -> DucatiRed
+            "Pure White"     -> PureWhiteHighlight
+            else -> KawasakiGreen
+        }
+
         val mutedHighlightColor = when (highlightColorName) {
-            "Yamaha Blue" -> MutedYamahaBlue
-            "Ducati Red" -> MutedDucatiRed
+            "Kawasaki" -> MutedKawasakiGreen
+            "Ducati"   -> MutedDucatiRed
+            "Yamaha"   -> MutedYamahaBlue
+            "KTM"      -> MutedKtmOrange
+            "Honda"    -> MutedHondaRed
+            "BMW"      -> MutedBmwBlue
+            "Triumph"  -> MutedTriumphGold
+            "Husqvarna"-> MutedHusqvarnaYellow
+            "Cyan"     -> MutedCyan
+            "White"    -> MutedWhiteHighlight
+            // legacy
             "Kawasaki Green" -> MutedKawasakiGreen
-            "Pure White" -> MutedWhiteHighlight
-            else -> MutedCyan
+            "Yamaha Blue"    -> MutedYamahaBlue
+            "Ducati Red"     -> MutedDucatiRed
+            "Pure White"     -> MutedWhiteHighlight
+            else -> MutedKawasakiGreen
         }
 
         var hasPlayedStartupAnimation by rememberSaveable { mutableStateOf(value = false) }
+        var showTopLevelCalibrationGuide by remember { mutableStateOf(false) }
+        var showDisclaimer by rememberSaveable { mutableStateOf(!prefs.getBoolean("disclaimer_accepted", false)) }
+        var showOnboardingCalibGuide by rememberSaveable { mutableStateOf(false) }
         val service = telemetryService
+
         val isRecording by (service?.isRecording?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(value = false) })
-        val context = LocalContext.current
+
+        // Orientation: OS sensor rotation for Dashboard (tab 0), locked if recording, portrait for all other screens.
+        LaunchedEffect(currentTab, isRecording) {
+            val activity = context as? android.app.Activity
+            activity?.requestedOrientation = when {
+                currentTab != 0 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                isRecording -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER
+            }
+        }
+        val calibrationAlert by (service?.calibrationAlert?.collectAsStateWithLifecycle()
+            ?: remember { mutableStateOf(null) })
+        val is24Hour by (service?.use24HourTime?.collectAsStateWithLifecycle()
+            ?: remember { mutableStateOf(true) })
 
         val mapView = remember {
             MapView(context).apply {
@@ -185,11 +239,10 @@ class MainActivity : ComponentActivity() {
                             highlightColor = highlightColor,
                             mutedHighlightColor = mutedHighlightColor,
                             highlightColorName = highlightColorName,
-                            onColorChange = { highlightColorName = it },
+                            onColorChange = onColorChange,
                             onToggleUnit = { isMetric = !isMetric },
                             onShowHistory = { currentTab = 3 },
                             onShowSettings = { currentTab = 1 },
-                            mapView = mapView,
                             hasPlayedStartupAnimation = hasPlayedStartupAnimation,
                             onResetMaxLean = { service.resetMaxLean1000m() }
                         ) {
@@ -204,9 +257,10 @@ class MainActivity : ComponentActivity() {
                                 isMetric = isMetric,
                                 highlightColor = highlightColor,
                                 highlightColorName = highlightColorName,
-                                onColorChange = { highlightColorName = it },
+                                onColorChange = onColorChange,
                                 onToggleUnit = { isMetric = !isMetric },
-                                onBack = { currentTab = 0 }
+                                onBack = { currentTab = 0 },
+                                onShowHelp = { showTopLevelCalibrationGuide = true }
                             )
                         }
                         2 -> {
@@ -231,21 +285,31 @@ class MainActivity : ComponentActivity() {
                         }
                         3 -> {
                             val sessions by service.pastSessions.collectAsStateWithLifecycle()
+                            val trashed by service.trashedSessions.collectAsStateWithLifecycle()
+                            val showDemo by service.showDemoSession.collectAsStateWithLifecycle()
+                            val demoSession = remember { createDemoSession() }
+                            val allSessionsWithDemo = remember(sessions, showDemo) {
+                                if (showDemo) listOf(demoSession) + sessions else sessions
+                            }
                             var selectedSession by remember { mutableStateOf<RideSession?>(null) }
+                            var cornerSession by remember { mutableStateOf<RideSession?>(null) }
+                            var showBin by remember { mutableStateOf(false) }
 
                             BackHandler(enabled = true) {
-                                if (selectedSession != null) {
-                                    selectedSession = null
-                                } else {
-                                    currentTab = 0
+                                when {
+                                    cornerSession != null -> cornerSession = null
+                                    selectedSession != null -> selectedSession = null
+                                    showBin -> showBin = false
+                                    else -> currentTab = 0
                                 }
                             }
-                            
+
                             Box(modifier = Modifier.fillMaxSize()) {
                                 HistoryMenuScreen(
                                     sessions = sessions,
                                     highlightColor = highlightColor,
                                     isMetric = isMetric,
+                                    is24Hour = is24Hour,
                                     onBack = { currentTab = 0 },
                                     onDeleteSession = { sessionId ->
                                         service.deleteSession(sessionId)
@@ -256,31 +320,137 @@ class MainActivity : ComponentActivity() {
                                     onExportSession = { session ->
                                         val csvFile = service.saveSessionToCsv(session)
                                         shareCsvFile(context, csvFile)
-                                    }
+                                    },
+                                    onExportAll = {
+                                        service.exportAllSessionsToCsv()?.let { shareCsvFile(context, it) }
+                                    },
+                                    onShowSettings = { currentTab = 1 },
+                                    onShowBin = { showBin = true },
+                                    trashCount = trashed.size,
+                                    showDemoSession = showDemo
                                 )
-                                
+
                                 if (selectedSession != null) {
                                     SessionSummaryOverlay(
                                         session = selectedSession!!,
                                         isMetric = isMetric,
+                                        is24Hour = is24Hour,
                                         highlightColor = highlightColor,
                                         onClose = { selectedSession = null },
-                                        mapView = mapView
+                                        mapView = mapView,
+                                        allSessions = allSessionsWithDemo,
+                                        onDelete = { sessionId ->
+                                            service.deleteSession(sessionId)
+                                            selectedSession = null
+                                        },
+                                        onShowCorners = { cornerSession = it },
+                                        onExportCsv = { session ->
+                                            val csvFile = service.saveSessionToCsv(session)
+                                            shareCsvFile(context, csvFile)
+                                        }
+                                    )
+                                }
+
+                                cornerSession?.let { cs ->
+                                    CornerMapScreen(
+                                        session = cs,
+                                        highlightColor = highlightColor,
+                                        onClose = { cornerSession = null }
+                                    )
+                                }
+
+                                if (showBin) {
+                                    RecycleBinScreen(
+                                        trashed = trashed,
+                                        is24Hour = is24Hour,
+                                        highlightColor = highlightColor,
+                                        onBack = { showBin = false },
+                                        onRestore = { service.restoreSession(it) },
+                                        onDeleteForever = { service.permanentlyDeleteSession(it) },
+                                        onEmptyBin = { service.emptyTrash() }
                                     )
                                 }
                             }
                         }
+                        4 -> {
+                            BackHandler(enabled = true) { currentTab = 0 }
+                            CameraRecordingView(
+                                service = service,
+                                highlightColor = highlightColor,
+                                isMetric = isMetric,
+                                onBack = { currentTab = 0 },
+                            )
+                        }
                     }
-                    
+
                     LaunchedEffect(isRecording) {
                         if (((!isRecording) && ((currentTab == 0) || (currentTab == 1))) && (service.sessionPoints.value.isNotEmpty())) {
                             currentTab = 2
+                        }
+                    }
+
+                    // Calibration watch alert — shown on top of all tabs
+                    if (calibrationAlert != null) {
+                        CalibrationAlertOverlay(
+                            reason = calibrationAlert!!,
+                            highlightColor = highlightColor,
+                            onOk = { service.dismissCalibrationAlert() },
+                            onRecalibrate = {
+                                service.dismissCalibrationAlert()
+                                showTopLevelCalibrationGuide = true
+                            }
+                        )
+                    }
+
+                    if (showTopLevelCalibrationGuide) {
+                        CalibrationGuideOverlay(
+                            service = service,
+                            highlightColor = highlightColor,
+                            onDismiss = { showTopLevelCalibrationGuide = false }
+                        )
+                    }
+
+                    if (showOnboardingCalibGuide) {
+                        CalibrationGuideOverlay(
+                            service = service,
+                            highlightColor = highlightColor,
+                            onDismiss = { showOnboardingCalibGuide = false }
+                        )
+                    }
+
+                    // Quick-launch for the camera / burned-in-overlay recorder (dashboard only)
+                    if (currentTab == 0 && !isRecording) {
+                        IconButton(
+                            onClick = { currentTab = 4 },
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 16.dp, bottom = 24.dp)
+                                .size(48.dp)
+                                .background(SurfaceCard.copy(alpha = 0.7f), CircleShape),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Videocam,
+                                contentDescription = "Record video with overlay",
+                                tint = highlightColor,
+                            )
                         }
                     }
                 } else {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("Connecting to Telemetry Engine...", color = PureWhite)
                     }
+                }
+
+                // First-launch disclaimer — shown on top of everything, including loading state.
+                if (showDisclaimer) {
+                    DisclaimerScreen(
+                        highlightColor = highlightColor,
+                        onAccepted = {
+                            prefs.edit().putBoolean("disclaimer_accepted", true).apply()
+                            showDisclaimer = false
+                            showOnboardingCalibGuide = true
+                        }
+                    )
                 }
             }
         }

@@ -18,7 +18,7 @@ val Rajdhani = FontFamily(
 // Inter for Menus, Labels & Body Text
 val Inter = FontFamily.SansSerif
 
-// Custom Typography for RideTracker
+// Custom Typography for Leanster
 val Typography = Typography(
     displayLarge = TextStyle(
         fontFamily = Rajdhani,

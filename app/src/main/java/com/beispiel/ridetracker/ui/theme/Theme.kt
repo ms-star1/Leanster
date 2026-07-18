@@ -29,7 +29,7 @@ private val DarkColorScheme = darkColorScheme(
 private val LightColorScheme = DarkColorScheme // Always use Dark Theme for high-contrast "Carbon & Neon"
 
 @Composable
-fun RideTrackerTheme(
+fun LeansterTheme(
     darkTheme: Boolean = true, // Force dark theme for the aesthetic
     dynamicColor: Boolean = false, // Disable dynamic color to maintain brand identity
     content: @Composable () -> Unit

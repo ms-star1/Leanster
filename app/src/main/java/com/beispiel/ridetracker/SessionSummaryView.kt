@@ -3,6 +3,8 @@
 package com.beispiel.ridetracker
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +26,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -43,6 +46,30 @@ import android.content.res.Configuration
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import android.content.Context
+import android.location.Geocoder
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** Reverse-geocodes a single GPS coordinate on an IO thread. Returns city, village, or county. */
+@Composable
+private fun rememberPlaceName(context: Context, lat: Double?, lng: Double?): String? {
+    if (lat == null || lng == null || !isValidGps(lat, lng)) return null
+    val state = produceState<String?>(null, lat, lng) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                if (!Geocoder.isPresent()) return@withContext null
+                @Suppress("DEPRECATION")
+                val addresses = Geocoder(context, java.util.Locale.getDefault()).getFromLocation(lat, lng, 1)
+                val addr = addresses?.firstOrNull() ?: return@withContext null
+                addr.locality ?: addr.subAdminArea ?: addr.adminArea
+            } catch (_: Exception) { null }
+        }
+    }
+    return state.value
+}
 
 @Composable
 fun HistoryMenuScreen(
@@ -51,132 +78,375 @@ fun HistoryMenuScreen(
     onDeleteSession: (String) -> Unit,
     onSelectSession: (RideSession) -> Unit,
     onExportSession: (RideSession) -> Unit,
+    onExportAll: (() -> Unit)? = null,
     highlightColor: Color = NeonCyan,
-    isMetric: Boolean = true
+    isMetric: Boolean = true,
+    is24Hour: Boolean = true,
+    onShowSettings: () -> Unit = {},
+    onShowBin: () -> Unit = {},
+    trashCount: Int = 0,
+    showDemoSession: Boolean = true
 ) {
     val mutedHighlightColor = when (highlightColor) {
-        YamahaBlue -> MutedYamahaBlue
-        DucatiRed -> MutedDucatiRed
-        KawasakiGreen -> MutedKawasakiGreen
+        YamahaBlue       -> MutedYamahaBlue
+        DucatiRed        -> MutedDucatiRed
+        KawasakiGreen    -> MutedKawasakiGreen
+        KtmOrange        -> MutedKtmOrange
+        HondaRed         -> MutedHondaRed
+        BmwBlue          -> MutedBmwBlue
+        TriumphGold      -> MutedTriumphGold
+        HusqvarnaYellow  -> MutedHusqvarnaYellow
         PureWhiteHighlight -> MutedWhiteHighlight
         else -> MutedCyan
     }
 
+    val demoSession = remember { createDemoSession() }
     var sessionToDelete by remember { mutableStateOf<String?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
 
     if (sessionToDelete != null) {
         AlertDialog(
             onDismissRequest = { sessionToDelete = null },
             containerColor = SurfaceCard,
             title = { Text("Delete Session?", style = MaterialTheme.typography.titleLarge) },
-            text = { Text("Are you sure you want to delete this session? This action cannot be undone.", style = MaterialTheme.typography.bodyLarge) },
+            text = { Text("This action cannot be undone.", style = MaterialTheme.typography.bodyLarge) },
             confirmButton = {
-                TextButton(onClick = {
-                    onDeleteSession(sessionToDelete!!)
-                    sessionToDelete = null
-                }) {
+                TextButton(onClick = { onDeleteSession(sessionToDelete!!); sessionToDelete = null }) {
                     Text("DELETE", color = AlertRed, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { sessionToDelete = null }) {
-                    Text("CANCEL", style = MaterialTheme.typography.bodyLarge, color = PureWhite)
+                    Text("CANCEL", color = PureWhite)
                 }
             }
         )
     }
 
-    val filteredSessions = remember(sessions, searchQuery) {
-        if (searchQuery.isBlank()) {
-            sessions
-        } else {
-            sessions.filter { session ->
-                val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-                val dateStr = dateFormat.format(java.util.Date(session.startTime))
-                dateStr.contains(searchQuery, ignoreCase = true) || session.id.contains(searchQuery, ignoreCase = true)
-            }
-        }
+    val allDisplaySessions = remember(sessions, showDemoSession) {
+        if (showDemoSession) listOf(demoSession) + sessions else sessions
     }
 
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // Group sessions by month/year
+    val monthFmt = remember { java.text.SimpleDateFormat("MMM yyyy", java.util.Locale.getDefault()) }
+    val todayStr = monthFmt.format(java.util.Date())
+    val grouped = remember(allDisplaySessions) {
+        allDisplaySessions.groupBy { monthFmt.format(java.util.Date(it.startTime)).uppercase() }
+    }
+    // Sort month groups chronologically (newest month on top), not by the formatted
+    // string — string order puts "JUN" above "JUL". Order by each group's newest session.
+    val sortedMonths = remember(grouped) {
+        grouped.entries.sortedByDescending { (_, monthSessions) -> monthSessions.maxOf { it.startTime } }.map { it.key }
+    }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DeepCarbon)
-            .padding(16.dp)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(bottom = 16.dp)
-        ) {
-            Button(
-                onClick = onBack,
-                colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
-                border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-                shape = RoundedCornerShape(8.dp)
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            // ── Header ────────────────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Back", style = MaterialTheme.typography.labelLarge, color = PureWhite)
-            }
-            Spacer(modifier = Modifier.width(16.dp))
-            Text(
-                "PAST SESSIONS",
-                style = MaterialTheme.typography.headlineMedium.copy(fontFamily = Inter),
-                color = highlightColor
-            )
-        }
-
-        // Search Bar at Header
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-            placeholder = { Text("Filter sessions by date (e.g. 2026)...", color = MutedGrey) },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = PureWhite,
-                unfocusedTextColor = PureWhite,
-                focusedContainerColor = SurfaceCard,
-                unfocusedContainerColor = SurfaceCard,
-                focusedBorderColor = highlightColor,
-                unfocusedBorderColor = BorderDivider,
-                cursorColor = highlightColor
-            ),
-            shape = RoundedCornerShape(12.dp),
-            singleLine = true
-        )
-
-        if (filteredSessions.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    text = if (sessions.isEmpty()) "No sessions recorded yet." else "No sessions match search filter.",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            }
-        } else {
-            if (isLandscape) {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    items(filteredSessions) { session ->
-                        SessionHistoryCard(session, onSelectSession, { sessionToDelete = it }, onExportSession, highlightColor, mutedHighlightColor, isMetric)
+                Text("SESSIONS", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Inter)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
+                            .clickable { onShowBin() }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text(
+                            text = if (trashCount > 0) "BIN ($trashCount)" else "BIN",
+                            fontSize = 12.sp, letterSpacing = 1.sp, color = MutedGrey
+                        )
                     }
+                    Box(
+                        modifier = Modifier
+                            .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
+                            .clickable { onExportAll?.invoke() }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Text("EXPORT ALL", fontSize = 12.sp, letterSpacing = 1.sp, color = highlightColor)
+                    }
+                }
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── Session List ──────────────────────────────────────────────
+            if (allDisplaySessions.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("No sessions yet. Start riding!", color = MutedGrey, fontSize = 14.sp)
                 }
             } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    items(filteredSessions) { session ->
-                        SessionHistoryCard(session, onSelectSession, { sessionToDelete = it }, onExportSession, highlightColor, mutedHighlightColor, isMetric)
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    sortedMonths.forEach { month ->
+                        val monthSessions = grouped[month] ?: return@forEach
+                        item {
+                            Text(
+                                text = month,
+                                fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey, fontFamily = Inter,
+                                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 8.dp)
+                            )
+                        }
+                        item { HorizontalDivider(color = BorderDivider) }
+                        items(monthSessions) { session ->
+                            val isDemo = session.id == DEMO_SESSION_ID
+                            SessionHistoryRow(
+                                session = session,
+                                isDemo = isDemo,
+                                isMetric = isMetric,
+                                is24Hour = is24Hour,
+                                highlightColor = highlightColor,
+                                onClick = { onSelectSession(session) },
+                                onDeleteRequest = { if (!isDemo) sessionToDelete = session.id }
+                            )
+                            HorizontalDivider(color = Color(0xFF111510))
+                        }
                     }
+                    item { Spacer(Modifier.height(80.dp)) } // space for bottom nav
                 }
             }
         }
+
+        // ── Bottom Nav ────────────────────────────────────────────────────
+        Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).background(DeepCarbon)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 10.dp).padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SessionNavItem("DIAL", false, highlightColor, onBack)
+                SessionNavItem("SESSIONS", true, highlightColor) {}
+                Text("⚙", fontSize = 18.sp, color = MutedGrey, modifier = Modifier.clickable { onShowSettings() })
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionNavItem(label: String, isActive: Boolean, highlightColor: Color, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick)) {
+        Text(label, fontSize = 12.sp, letterSpacing = 1.2.sp,
+            color = if (isActive) highlightColor else MutedGrey,
+            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+            fontFamily = FontFamily.SansSerif)
+        if (isActive) {
+            Spacer(Modifier.height(3.dp))
+            Box(Modifier.width(20.dp).height(1.5.dp).background(highlightColor, RoundedCornerShape(1.dp)))
+        }
+    }
+}
+
+@Composable
+fun RecycleBinScreen(
+    trashed: List<RideSession>,
+    is24Hour: Boolean,
+    highlightColor: Color,
+    onBack: () -> Unit,
+    onRestore: (String) -> Unit,
+    onDeleteForever: (String) -> Unit,
+    onEmptyBin: () -> Unit
+) {
+    var confirmDeleteId by remember { mutableStateOf<String?>(null) }
+    var confirmEmpty by remember { mutableStateOf(false) }
+
+    if (confirmDeleteId != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteId = null },
+            containerColor = SurfaceCard,
+            title = { Text("Delete Forever?", style = MaterialTheme.typography.titleLarge) },
+            text = { Text("This ride will be permanently deleted and cannot be recovered.", style = MaterialTheme.typography.bodyLarge) },
+            confirmButton = {
+                TextButton(onClick = { onDeleteForever(confirmDeleteId!!); confirmDeleteId = null }) {
+                    Text("DELETE", color = AlertRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteId = null }) { Text("CANCEL", color = PureWhite) }
+            }
+        )
+    }
+    if (confirmEmpty) {
+        AlertDialog(
+            onDismissRequest = { confirmEmpty = false },
+            containerColor = SurfaceCard,
+            title = { Text("Empty Recycle Bin?", style = MaterialTheme.typography.titleLarge) },
+            text = { Text("All ${trashed.size} ride(s) in the bin will be permanently deleted.", style = MaterialTheme.typography.bodyLarge) },
+            confirmButton = {
+                TextButton(onClick = { onEmptyBin(); confirmEmpty = false }) {
+                    Text("EMPTY", color = AlertRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmEmpty = false }) { Text("CANCEL", color = PureWhite) }
+            }
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // ── Header ──
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("←", fontSize = 20.sp, color = MutedGrey, modifier = Modifier.clickable(onClick = onBack))
+                    Text("RECYCLE BIN", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, fontFamily = Inter)
+                }
+                if (trashed.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .border(androidx.compose.foundation.BorderStroke(1.dp, BorderDivider), RoundedCornerShape(6.dp))
+                            .clickable { confirmEmpty = true }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) { Text("EMPTY", fontSize = 12.sp, letterSpacing = 1.sp, color = AlertRed) }
+                }
+            }
+            HorizontalDivider(color = BorderDivider)
+            Text(
+                "Deleted rides are kept for 30 days, then removed permanently.",
+                fontSize = 11.sp, color = MutedGrey, fontFamily = Inter,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+            )
+
+            if (trashed.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("Recycle bin is empty.", color = MutedGrey, fontSize = 14.sp)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(trashed) { session ->
+                        TrashSessionRow(
+                            session = session,
+                            is24Hour = is24Hour,
+                            highlightColor = highlightColor,
+                            onRestore = { onRestore(session.id) },
+                            onDeleteForever = { confirmDeleteId = session.id }
+                        )
+                        HorizontalDivider(color = Color(0xFF111510))
+                    }
+                    item { Spacer(Modifier.height(24.dp)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrashSessionRow(
+    session: RideSession,
+    is24Hour: Boolean,
+    highlightColor: Color,
+    onRestore: () -> Unit,
+    onDeleteForever: () -> Unit
+) {
+    val dateFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
+    val timeFmt = remember(is24Hour) { java.text.SimpleDateFormat(if (is24Hour) "HH:mm" else "h:mm a", java.util.Locale.getDefault()) }
+    val dateStr = dateFmt.format(java.util.Date(session.startTime))
+    val timeStr = timeFmt.format(java.util.Date(session.startTime))
+
+    val dayMs = 24L * 60 * 60 * 1000
+    val deletedAt = session.deletedAt ?: 0L
+    val daysLeft = (30L - (System.currentTimeMillis() - deletedAt) / dayMs).coerceIn(0L, 30L)
+
+    val context = LocalContext.current
+    val firstPt = session.points.firstOrNull { isValidGps(it.latitude, it.longitude) }
+    val startPlace = rememberPlaceName(context, firstPt?.latitude, firstPt?.longitude)
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = if (startPlace != null) "$startPlace · $dateStr · $timeStr" else "$dateStr · $timeStr",
+                fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PureWhite, maxLines = 1
+            )
+            Text(
+                text = if (daysLeft <= 0L) "Deletes today" else "$daysLeft day${if (daysLeft == 1L) "" else "s"} left",
+                fontSize = 11.sp, color = MutedGrey, fontFamily = FontFamily.Monospace
+            )
+        }
+        Text("RESTORE", fontSize = 12.sp, letterSpacing = 0.6.sp, fontWeight = FontWeight.SemiBold,
+            color = highlightColor, modifier = Modifier.clickable(onClick = onRestore))
+        Text("DELETE", fontSize = 12.sp, letterSpacing = 0.6.sp, fontWeight = FontWeight.SemiBold,
+            color = AlertRed, modifier = Modifier.clickable(onClick = onDeleteForever))
+    }
+}
+
+@Composable
+private fun SessionHistoryRow(
+    session: RideSession,
+    isDemo: Boolean,
+    isMetric: Boolean,
+    is24Hour: Boolean,
+    highlightColor: Color,
+    onClick: () -> Unit,
+    onDeleteRequest: () -> Unit
+) {
+    val dateFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
+    val todayFmt = remember { java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()) }
+    val timeFmt = remember(is24Hour) { java.text.SimpleDateFormat(if (is24Hour) "HH:mm" else "h:mm a", java.util.Locale.getDefault()) }
+    val today = todayFmt.format(java.util.Date())
+    val dateStr = dateFmt.format(java.util.Date(session.startTime))
+    val timeStr = timeFmt.format(java.util.Date(session.startTime))
+    val isToday = dateStr == today
+
+    val durMs = if (session.endTime > session.startTime) session.endTime - session.startTime else 0L
+    val h = durMs / 3600000; val m = (durMs % 3600000) / 60000; val s = (durMs % 60000) / 1000
+    val durStr = if (h > 0) "%02d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+    val distKm = session.points.sumOf { it.distanceDelta } / 1000.0
+    val distStr = if (isMetric) "%.1f km".format(distKm) else "%.1f mi".format(distKm * 0.621371)
+
+    val context = LocalContext.current
+    val firstPt = session.points.firstOrNull { isValidGps(it.latitude, it.longitude) }
+    val startPlace = rememberPlaceName(context, firstPt?.latitude, firstPt?.longitude)
+
+    Row(
+        modifier = Modifier.fillMaxWidth().background(if (isToday || isDemo) Color(0xFF0B150A) else Color.Transparent).clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = if (isDemo) "DEMO" else (startPlace ?: "—"),
+                    fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                    color = if (isToday || isDemo) highlightColor else PureWhite,
+                    maxLines = 1
+                )
+                Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
+                Text(
+                    text = if (isToday) "Today" else dateStr,
+                    fontSize = 12.sp,
+                    color = if (isToday) highlightColor else MutedGrey,
+                    letterSpacing = 0.4.sp
+                )
+                Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
+                Text(
+                    text = timeStr,
+                    fontSize = 12.sp,
+                    color = MutedGrey,
+                    letterSpacing = 0.4.sp
+                )
+            }
+            Text(
+                text = "$durStr · $distStr · ${session.corners.size} corners",
+                fontSize = 12.sp, color = MutedGrey, fontFamily = FontFamily.Monospace
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${session.maxLeanRight.toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (isToday || isDemo) highlightColor else PureWhite)
+                Text("R", fontSize = 10.sp, color = if (isToday || isDemo) highlightColor else MutedGrey)
+                Text("·", fontSize = 12.sp, color = Color(0xFF3A4036))
+                Text("${abs(session.maxLeanLeft).toInt()}°", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (isToday || isDemo) PureWhite else PureWhite.copy(0.7f))
+                Text("L", fontSize = 10.sp, color = MutedGrey)
+            }
+        }
+
+        Text("›", fontSize = 18.sp, color = MutedGrey)
     }
 }
 
@@ -188,116 +458,130 @@ fun SessionHistoryCard(
     onExportSession: (RideSession) -> Unit,
     highlightColor: Color,
     mutedHighlightColor: Color,
-    isMetric: Boolean = true
+    isMetric: Boolean = true,
+    isDemo: Boolean = false,
+    rideIndex: Int = 0
 ) {
+    val cardBg    = Color(0xFF0E130D)
+    val borderCol = Color(0xFF1D211B)
+
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onSelectSession(session) },
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-        shape = RoundedCornerShape(12.dp)
+        modifier = Modifier.fillMaxWidth().clickable { onSelectSession(session) },
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderCol),
+        shape = RoundedCornerShape(14.dp)
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(start = 0.dp, top = 0.dp, end = 14.dp, bottom = 0.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Mini-Map Thumbnail Canvas
-            if (session.points.isNotEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 80.dp, height = 65.dp)
-                        .background(DeepCarbon, RoundedCornerShape(8.dp))
-                        .border(1.dp, BorderDivider, RoundedCornerShape(8.dp))
-                        .padding(4.dp)
-                ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val pts = session.points
-                        val lats = pts.map { it.latitude }
-                        val lngs = pts.map { it.longitude }
-                        val minLat = lats.minOrNull() ?: 0.0
-                        val maxLat = lats.maxOrNull() ?: 0.0
-                        val minLng = lngs.minOrNull() ?: 0.0
-                        val maxLng = lngs.maxOrNull() ?: 0.0
-
-                        val latRange = maxLat - minLat
-                        val lngRange = maxLng - minLng
-
-                        val path = Path()
-                        pts.forEachIndexed { index, pt ->
-                            val x = if (lngRange > 0.0) {
-                                ((pt.longitude - minLng) / lngRange * size.width).toFloat()
-                            } else {
-                                size.width / 2f
-                            }
-                            val y = if (latRange > 0.0) {
-                                (size.height - (pt.latitude - minLat) / latRange * size.height).toFloat()
-                            } else {
-                                size.height / 2f
-                            }
-
-                            if (index == 0) {
-                                path.moveTo(x, y)
-                            } else {
-                                path.lineTo(x, y)
-                            }
+            // ── Route thumbnail ──
+            Box(
+                modifier = Modifier
+                    .size(width = 76.dp, height = 76.dp)
+                    .background(Color(0xFF070908), RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp))
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                    val pts = session.points
+                    if (pts.size >= 2) {
+                        val minLat = pts.minOf { it.latitude };  val maxLat = pts.maxOf { it.latitude }
+                        val minLng = pts.minOf { it.longitude }; val maxLng = pts.maxOf { it.longitude }
+                        val latR = (maxLat - minLat).coerceAtLeast(0.0001)
+                        val lngR = (maxLng - minLng).coerceAtLeast(0.0001)
+                        val latCorr = kotlin.math.cos(Math.toRadians((minLat + maxLat) / 2)).toFloat()
+                        val gpsAsp = (lngR * latCorr / latR).toFloat()
+                        val scrAsp = size.width / size.height
+                        val scX: Float; val scY: Float; val ox: Float; val oy: Float
+                        if (gpsAsp > scrAsp) {
+                            scX = size.width; scY = size.width / gpsAsp; ox = 0f; oy = (size.height - scY) / 2
+                        } else {
+                            scY = size.height; scX = size.height * gpsAsp; oy = 0f; ox = (size.width - scX) / 2
                         }
+                        fun px(lng: Double) = (ox + ((lng - minLng) / lngR * scX)).toFloat()
+                        fun py(lat: Double) = (oy + ((maxLat - lat) / latR * scY)).toFloat()
 
-                        drawPath(
-                            path = path,
-                            color = highlightColor,
-                            style = Stroke(width = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                        // Road base
+                        val road = Path(); pts.forEachIndexed { i, p -> if (i == 0) road.moveTo(px(p.longitude), py(p.latitude)) else road.lineTo(px(p.longitude), py(p.latitude)) }
+                        drawPath(road, Color(0xFF1A2218), style = Stroke(7.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                        // Route line
+                        val route = Path(); pts.forEachIndexed { i, p -> if (i == 0) route.moveTo(px(p.longitude), py(p.latitude)) else route.lineTo(px(p.longitude), py(p.latitude)) }
+                        drawPath(route, highlightColor.copy(alpha = 0.85f), style = Stroke(1.5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                        // Start / end dots
+                        pts.firstOrNull()?.let { drawCircle(MutedGrey, 2.5.dp.toPx(), Offset(px(it.longitude), py(it.latitude))) }
+                        pts.lastOrNull()?.let { drawCircle(highlightColor, 2.5.dp.toPx(), Offset(px(it.longitude), py(it.latitude))) }
+                    } else {
+                        drawCircle(Color(0xFF2A3028), 20.dp.toPx(), Offset(size.width / 2, size.height / 2))
+                    }
+                }
+            }
+
+            // ── Info column ──
+            Column(modifier = Modifier.weight(1f).padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                val dateFmt = remember { java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()) }
+                val timeFmt = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
+                val dateStr  = dateFmt.format(java.util.Date(session.startTime))
+                val timeStr  = timeFmt.format(java.util.Date(session.startTime))
+                val durMs    = if (session.endTime > session.startTime) session.endTime - session.startTime else 0L
+                val durMin   = durMs / 60000L
+                val distKm   = session.points.sumOf { it.distanceDelta } / 1000.0
+                val distVal  = if (isMetric) "%.1fkm".format(distKm) else "%.1fmi".format(distKm * 0.621371)
+
+                // Header: ride # + date
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (isDemo) {
+                            Box(modifier = Modifier
+                                .background(highlightColor.copy(alpha = 0.14f), RoundedCornerShape(5.dp))
+                                .padding(horizontal = 7.dp, vertical = 2.dp)) {
+                                Text("DEMO", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp), color = highlightColor)
+                            }
+                        } else {
+                            Text("RIDE #$rideIndex",
+                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp),
+                                color = highlightColor)
+                        }
+                    }
+                    Text("$dateStr  $timeStr",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani),
+                        color = MutedGrey)
+                }
+
+                // Stats row
+                Text("$distVal  ·  ${durMin}min  ·  ${session.corners.size} corners",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani, fontSize = 11.sp),
+                    color = MidGrey)
+
+                // Lean row
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("L ${abs(session.maxLeanLeft).toInt()}°",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                        color = PureWhite.copy(alpha = 0.75f))
+                    Text("·",  style = MaterialTheme.typography.labelSmall, color = Color(0xFF3A4036))
+                    Text("${session.maxLeanRight.toInt()}° R",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                        color = PureWhite.copy(alpha = 0.75f))
+                }
+
+                // Calibration error badge
+                if (session.stopReason != null) {
+                    Box(
+                        modifier = Modifier
+                            .background(AlertRed.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            "⚠ ${session.stopReason}",
+                            fontSize = 9.sp, letterSpacing = 0.4.sp,
+                            color = AlertRed, fontFamily = Inter
                         )
                     }
                 }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(width = 80.dp, height = 65.dp)
-                        .background(DeepCarbon, RoundedCornerShape(8.dp))
-                        .border(1.dp, BorderDivider, RoundedCornerShape(8.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("NO GPS", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MutedGrey)
-                }
             }
 
-            Column(modifier = Modifier.weight(1f)) {
-                val dateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
-                val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
-                val dateStr = dateFormat.format(java.util.Date(session.startTime))
-                val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
-                
-                val durationMs = if (session.endTime > session.startTime) session.endTime - session.startTime else 0L
-                val durationMin = durationMs / 60000L
-
-                val maxSpeedRaw = session.points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
-                val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
-
-                Text(dateStr, style = MaterialTheme.typography.titleMedium, color = PureWhite)
-                Text("$startTimeStr • $durationMin min", style = MaterialTheme.typography.bodyMedium.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold), color = highlightColor)
-                Text(
-                    text = "Lean: L ${abs(session.maxLeanLeft).toInt()}° / R ${session.maxLeanRight.toInt()}° • Speed: ${maxSpeed.toInt()} ${if (isMetric) "km/h" else "mph"}",
-                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
-                    color = MutedGrey
-                )
-            }
-            
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                IconButton(onClick = { onDeleteRequest(session.id) }, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = AlertRed.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
-                }
-
-                IconButton(onClick = { onExportSession(session) }, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.Share, contentDescription = "Export", tint = highlightColor.copy(alpha = 0.8f), modifier = Modifier.size(20.dp))
-                }
-            }
-            
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = mutedHighlightColor, modifier = Modifier.size(24.dp))
+            // ── Chevron ──
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
+                tint = mutedHighlightColor.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -308,233 +592,338 @@ fun SessionSummaryOverlay(
     isMetric: Boolean,
     onClose: () -> Unit,
     highlightColor: Color = NeonCyan,
-    mapView: org.maplibre.android.maps.MapView? = null
+    is24Hour: Boolean = true,
+    mapView: org.maplibre.android.maps.MapView? = null,
+    allSessions: List<RideSession> = emptyList(),
+    onDelete: ((String) -> Unit)? = null,
+    onShowCorners: ((RideSession) -> Unit)? = null,
+    onExportCsv: ((RideSession) -> Unit)? = null
 ) {
-    val mutedHighlightColor = when (highlightColor) {
-        YamahaBlue -> MutedYamahaBlue
-        DucatiRed -> MutedDucatiRed
-        KawasakiGreen -> MutedKawasakiGreen
-        PureWhiteHighlight -> MutedWhiteHighlight
-        else -> MutedCyan
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val dateFormat = remember { java.text.SimpleDateFormat("MMM d, yyyy", java.util.Locale.getDefault()) }
+    val timeFormat = remember(is24Hour) { java.text.SimpleDateFormat(if (is24Hour) "HH:mm" else "h:mm a", java.util.Locale.getDefault()) }
+    val dateStr = dateFormat.format(java.util.Date(session.startTime))
+    val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
+    val hasEndTime = session.endTime > session.startTime
+    val endTimeStr = if (hasEndTime) timeFormat.format(java.util.Date(session.endTime)) else null
+
+    val firstPt = session.points.firstOrNull { isValidGps(it.latitude, it.longitude) }
+    val startPlace = rememberPlaceName(context, firstPt?.latitude, firstPt?.longitude)
+
+    val totalDistanceRaw = session.points.sumOf { it.distanceDelta } / 1000.0
+    val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
+    val distUnit = if (isMetric) "km" else "mi"
+    val maxSpeedRaw = session.points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
+    val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
+    val speedUnit = if (isMetric) "km/h" else "mph"
+
+    val maxLeft = abs(session.points.minByOrNull { it.leanAngle }?.leanAngle ?: session.maxLeanLeft)
+    val maxRight = session.points.maxByOrNull { it.leanAngle }?.leanAngle ?: session.maxLeanRight
+
+    val durationMs = if (session.endTime > 0L) session.endTime - session.startTime
+        else ((session.points.lastOrNull()?.timestamp ?: 0L) - (session.points.firstOrNull()?.timestamp ?: 0L))
+    val durationStr = if (durationMs > 0) {
+        val totalSec = durationMs / 1000
+        "%02d:%02d".format(totalSec / 60, totalSec % 60)
+    } else "--:--"
+
+    val smoothness = remember(session) { rideSmoothness(session.points) }
+    val consistency = remember(session) { rideConsistency(session.points) }
+    val symmetry = remember(session) { rideSymmetry(maxLeft, maxRight) }
+
+    val cornerRows = remember(session, allSessions) { computeCornerRows(session, allSessions) }
+    val pbRows = remember(cornerRows) {
+        cornerRows.filter { it.isPb && it.bestLean != null && it.thisLean > it.bestLean }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DeepCarbon)
-    ) {
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 24.dp)
         ) {
+            // ── Status row ──
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp, top = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.End
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
-                        Text("✕", color = PureWhite, style = MaterialTheme.typography.titleLarge)
-                    }
-                    Text(
-                        text = "SESSION DETAILS",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontFamily = Inter,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        ),
-                        color = highlightColor
-                    )
-                }
-
-                val dateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
-                val timeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
-                val dateStr = dateFormat.format(java.util.Date(session.startTime))
-                val startTimeStr = timeFormat.format(java.util.Date(session.startTime))
-                val endTimeStr = if (session.endTime > 0L) timeFormat.format(java.util.Date(session.endTime)) else "--:--"
-
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    modifier = Modifier.padding(end = 4.dp)
-                ) {
-                    Text(
-                        text = "$dateStr",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                        color = PureWhite
-                    )
-                    Text(
-                        text = "$startTimeStr - $endTimeStr",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MutedGrey
-                    )
+                IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                    Text("✕", color = MutedGrey, fontSize = 18.sp)
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            // ── Title ──
+            Column(modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 6.dp)) {
+                Text("RIDE DETAILS", fontSize = 11.sp, letterSpacing = 4.sp, color = MutedGrey, fontFamily = Inter)
+                Text(
+                    text = if (startPlace != null) "$startPlace · $dateStr" else dateStr,
+                    fontSize = 32.sp, fontWeight = FontWeight.SemiBold, color = PureWhite,
+                    letterSpacing = (-0.2).sp, modifier = Modifier.padding(top = 4.dp)
+                )
+                Text(
+                    text = if (endTimeStr != null) "$startTimeStr – $endTimeStr" else startTimeStr,
+                    fontSize = 13.sp, color = MutedGrey, fontFamily = FontFamily.Monospace,
+                    letterSpacing = 0.6.sp, modifier = Modifier.padding(top = 4.dp)
+                )
+            }
 
-            val totalDistanceRaw = session.points.sumOf { it.distanceDelta } / 1000.0 // km
-            val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
-            val maxSpeedRaw = session.points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
-            val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
-
-            val configuration = LocalConfiguration.current
-            val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-            if (isLandscape) {
+            // ── Calibration error banner ──
+            if (session.stopReason != null) {
                 Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        .fillMaxWidth()
+                        .padding(start = 24.dp, end = 24.dp, top = 12.dp)
+                        .background(AlertRed.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+                        .border(androidx.compose.foundation.BorderStroke(1.dp, AlertRed.copy(alpha = 0.35f)), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1.2f)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SummaryStatsGrid(
-                            totalDistance = totalDistance,
-                            maxSpeed = maxSpeed,
-                            maxLeanLeft = session.maxLeanLeft,
-                            maxLeanRight = session.maxLeanRight,
-                            maxPitch = session.maxPitch,
-                            cornersCount = session.corners.size,
-                            isMetric = isMetric,
-                            highlightColor = highlightColor,
-                            isLandscape = true,
-                            modifier = Modifier.weight(1.5f)
+                    Text("⚠", fontSize = 16.sp, color = AlertRed)
+                    Column {
+                        Text(
+                            session.stopReason,
+                            fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                            color = AlertRed, fontFamily = Inter
                         )
-
-                        // Embedded Vector Map in Left Column (Landscape)
-                        if (mapView != null && session.points.isNotEmpty()) {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                androidx.compose.ui.viewinterop.AndroidView(
-                                    factory = {
-                                        mapView.apply {
-                                            getMapAsync { maplibreMap ->
-                                                maplibreMap.clear()
-                                                val latLngs = session.points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
-                                                maplibreMap.addPolyline(
-                                                    org.maplibre.android.annotations.PolylineOptions()
-                                                        .addAll(latLngs)
-                                                        .color(highlightColor.toArgb())
-                                                        .width(5f)
-                                                )
-                                                val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
-                                                latLngs.forEach { boundsBuilder.include(it) }
-                                                try {
-                                                    maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
-                                                } catch (e: Exception) {
-                                                    val avgLat = latLngs.map { it.latitude }.average()
-                                                    val avgLng = latLngs.map { it.longitude }.average()
-                                                    maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
-                                                }
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        } else {
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
-                    }
-                    Column(
-                        modifier = Modifier
-                            .weight(1.5f)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1f))
+                        Text(
+                            "Session data up to this point has been saved.",
+                            fontSize = 11.sp, color = AlertRed.copy(alpha = 0.65f), fontFamily = Inter
+                        )
                     }
                 }
-            } else {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    SummaryStatsGrid(
-                        totalDistance = totalDistance,
-                        maxSpeed = maxSpeed,
-                        maxLeanLeft = session.maxLeanLeft,
-                        maxLeanRight = session.maxLeanRight,
-                        maxPitch = session.maxPitch,
-                        cornersCount = session.corners.size,
-                        isMetric = isMetric,
-                        highlightColor = highlightColor,
-                        isLandscape = false,
-                        modifier = Modifier.weight(0.7f)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
+            }
 
-                    // Embedded Vector Map in Scrollable Content (Portrait)
-                    if (mapView != null && session.points.isNotEmpty()) {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(0.8f),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+            // ── Top stats row ──
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .padding(start = 24.dp, end = 24.dp, top = 18.dp, bottom = 20.dp)
+                    .height(IntrinsicSize.Min)
+            ) {
+                TopStat("DISTANCE", "%.1f".format(totalDistance), distUnit, Modifier.weight(1f))
+                Box(Modifier.width(1.dp).fillMaxHeight().background(BorderDivider).padding(vertical = 2.dp))
+                TopStat("DURATION", durationStr, null, Modifier.weight(1f), mono = true)
+                Box(Modifier.width(1.dp).fillMaxHeight().background(BorderDivider))
+                TopStat("TOP SPEED", "${maxSpeed.toInt()}", speedUnit, Modifier.weight(1f))
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── Max lean ──
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp)) {
+                Text("MAX LEAN", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    LeanHero(maxLeft.toInt(), "LEFT", MidGrey, MutedGrey)
+                    Text("|", fontSize = 22.sp, color = Color(0xFF3A4036))
+                    LeanHero(maxRight.toInt(), "RIGHT", PureWhite, highlightColor)
+                }
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── Rider report card ──
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp)) {
+                Text("RIDER REPORT CARD", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey,
+                    modifier = Modifier.padding(bottom = 14.dp))
+                ReportBar("SMOOTHNESS", smoothness, highlightColor)
+                Spacer(Modifier.height(13.dp))
+                ReportBar("CONSISTENCY", consistency, highlightColor)
+                Spacer(Modifier.height(13.dp))
+                ReportBar("SYMMETRY", symmetry, highlightColor)
+            }
+            HorizontalDivider(color = BorderDivider)
+
+            // ── Performance trend ──
+            val trendSessions = remember(allSessions) {
+                allSessions.filter { it.id != DEMO_SESSION_ID && it.id != DEMO_GHOST_SESSION_ID && it.points.isNotEmpty() }
+                    .sortedBy { it.startTime }
+                    .takeLast(10)
+            }
+            if (trendSessions.size >= 2) {
+                SessionTrendSection(
+                    currentSessionId = session.id,
+                    sessions = trendSessions,
+                    highlightColor = highlightColor
+                )
+                HorizontalDivider(color = BorderDivider)
+            }
+
+            // ── New personal bests ──
+            if (pbRows.isNotEmpty()) {
+                Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)) {
+                    Text("${pbRows.size} NEW PERSONAL BEST${if (pbRows.size == 1) "" else "S"}",
+                        fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey,
+                        modifier = Modifier.padding(bottom = 12.dp))
+                    androidx.compose.foundation.layout.FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        pbRows.forEach { row ->
+                            val delta = (row.thisLean - (row.bestLean ?: row.thisLean)).toInt()
+                            PbChip("T${row.index}", "${row.thisLean.toInt()}°", "+$delta°", highlightColor)
+                        }
+                    }
+                }
+            }
+
+            // ── Action buttons ──
+            Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { shareSessionCard(context, session, highlightColor, isMetric) },
+                        colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
+                        modifier = Modifier.weight(1f).height(52.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("SHARE SESSION", fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                    }
+                    if (onExportCsv != null && session.id != DEMO_SESSION_ID) {
+                        OutlinedButton(
+                            onClick = { onExportCsv(session) },
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.Transparent, contentColor = MutedGrey),
                             border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                            modifier = Modifier.height(52.dp),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            androidx.compose.ui.viewinterop.AndroidView(
-                                factory = {
-                                    mapView.apply {
-                                        getMapAsync { maplibreMap ->
-                                            maplibreMap.clear()
-                                            val latLngs = session.points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
-                                            maplibreMap.addPolyline(
-                                                org.maplibre.android.annotations.PolylineOptions()
-                                                    .addAll(latLngs)
-                                                    .color(highlightColor.toArgb())
-                                                    .width(5f)
-                                            )
-                                            val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
-                                            latLngs.forEach { boundsBuilder.include(it) }
-                                            try {
-                                                maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
-                                            } catch (e: Exception) {
-                                                val avgLat = latLngs.map { it.latitude }.average()
-                                                val avgLng = latLngs.map { it.longitude }.average()
-                                                maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
-                                            }
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            Text("CSV", fontSize = 13.sp, letterSpacing = 0.8.sp)
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
                     }
-
-                    SummaryGraphs(session.points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1.5f))
+                }
+                if (onShowCorners != null && session.corners.isNotEmpty()) {
+                    val topCount = minOf(session.corners.size, 20)
+                    OutlinedButton(
+                        onClick = { onShowCorners(session) },
+                        colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceCard, contentColor = PureWhite),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("CORNER MAP · TOP $topCount", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp)
+                    }
+                }
+                if (onDelete != null && session.id != DEMO_SESSION_ID) {
+                    TextButton(
+                        onClick = { onDelete(session.id) },
+                        modifier = Modifier.fillMaxWidth().height(40.dp)
+                    ) {
+                        Text("DELETE RIDE", fontSize = 12.sp, color = AlertRed, letterSpacing = 0.8.sp)
+                    }
                 }
             }
+        }
+    }
+}
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = onClose,
-                colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("CLOSE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+@Composable
+private fun TopStat(label: String, value: String, unit: String?, modifier: Modifier = Modifier, mono: Boolean = false) {
+    Column(modifier = modifier) {
+        Text(label, fontSize = 11.sp, letterSpacing = 1.6.sp, color = MutedGrey)
+        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 4.dp)) {
+            Text(value, fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = PureWhite,
+                fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default)
+            if (unit != null) {
+                Text(" $unit", fontSize = 14.sp, color = MutedGrey, modifier = Modifier.padding(bottom = 3.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun LeanHero(angle: Int, label: String, valueColor: Color, labelColor: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(verticalAlignment = Alignment.Top) {
+            Text("$angle", fontSize = 64.sp, fontWeight = FontWeight.SemiBold, color = valueColor,
+                letterSpacing = (-1).sp, lineHeight = 56.sp)
+            Text("°", fontSize = 26.sp, color = labelColor)
+        }
+        Text(label, fontSize = 11.sp, letterSpacing = 2.4.sp, color = labelColor,
+            modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+@Composable
+private fun ReportBar(label: String, score: Int, highlightColor: Color) {
+    val barColor = if (score >= 75) highlightColor else MidGrey
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, fontSize = 11.sp, letterSpacing = 1.sp, color = MutedGrey, modifier = Modifier.width(92.dp))
+        Box(modifier = Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(2.dp)).background(BorderDivider)) {
+            Box(modifier = Modifier.fillMaxWidth(score / 100f).fillMaxHeight().background(barColor))
+        }
+        Text("$score", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+            color = if (score >= 75) PureWhite else MidGrey,
+            modifier = Modifier.width(28.dp), textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun PbChip(corner: String, lean: String, delta: String, highlightColor: Color) {
+    Row(
+        modifier = Modifier
+            .border(androidx.compose.foundation.BorderStroke(1.dp, highlightColor.copy(alpha = 0.4f)), RoundedCornerShape(8.dp))
+            .background(highlightColor.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("$corner ", fontSize = 12.sp, color = MutedGrey, fontFamily = FontFamily.Monospace)
+        Text(lean, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = highlightColor)
+        Text(" $delta", fontSize = 11.sp, color = highlightColor.copy(alpha = 0.8f))
+    }
+}
+
+/** Smoothness 0–100 from the stability of lean angular rate (lower jerk = smoother). */
+private fun rideSmoothness(points: List<TelemetryPoint>): Int {
+    if (points.size < 2) return 50
+    val rates = ArrayList<Float>(points.size)
+    for (i in 1 until points.size) {
+        val dt = (points[i].timestamp - points[i - 1].timestamp).coerceAtLeast(1L) / 1000f
+        rates.add(abs(points[i].leanAngle - points[i - 1].leanAngle) / dt)
+    }
+    val mean = rates.average()
+    val sd = kotlin.math.sqrt(rates.map { (it - mean) * (it - mean) }.average()).toFloat()
+    return (100f / (1f + sd / 5f)).coerceIn(0f, 100f).toInt()
+}
+
+/** Consistency 0–100 from how steady speed is held (low relative variation = consistent). */
+private fun rideConsistency(points: List<TelemetryPoint>): Int {
+    val moving = points.filter { it.speedKmh > 5.0 }
+    if (moving.size < 2) return 50
+    val mean = moving.map { it.speedKmh }.average()
+    if (mean <= 0.0) return 50
+    val sd = kotlin.math.sqrt(moving.map { (it.speedKmh - mean) * (it.speedKmh - mean) }.average())
+    val cv = (sd / mean).toFloat()
+    return (100f * (1f - cv).coerceIn(0f, 1f)).toInt()
+}
+
+/** Symmetry 0–100 from how balanced left vs. right lean is. */
+private fun rideSymmetry(leftMax: Float, rightMax: Float): Int {
+    val hi = maxOf(leftMax, rightMax)
+    if (hi <= 0f) return 50
+    return (100f * minOf(leftMax, rightMax) / hi).coerceIn(0f, 100f).toInt()
+}
+
+@Composable
+private fun OverlayStatCard(label: String, value: String, color: Color, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier.fillMaxHeight(),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                letterSpacing = 0.5.sp, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(4.dp))
+            Text(value, style = MaterialTheme.typography.titleMedium.copy(fontFamily = Rajdhani),
+                color = color, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         }
     }
 }
@@ -549,267 +938,292 @@ fun SessionSummaryScreen(
     highlightColor: Color = NeonCyan,
     mapView: org.maplibre.android.maps.MapView? = null
 ) {
-    val mutedHighlightColor = when (highlightColor) {
-        YamahaBlue -> MutedYamahaBlue
-        DucatiRed -> MutedDucatiRed
-        KawasakiGreen -> MutedKawasakiGreen
-        PureWhiteHighlight -> MutedWhiteHighlight
-        else -> MutedCyan
-    }
+    var showDiscardDialog by remember { mutableStateOf(false) }
 
-    var showDiscardDialog by remember { mutableStateOf(value = false) }
+    val totalDistanceRaw = remember(points) { points.sumOf { it.distanceDelta } / 1000.0 }
+    val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
+    val distUnit = if (isMetric) "km" else "mi"
+    val maxSpeedRaw = remember(points) { points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0 }
+    val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
+    val speedUnit = if (isMetric) "km/h" else "mph"
+    val maxLeft  = remember(points) { points.minByOrNull { it.leanAngle }?.leanAngle ?: 0f }
+    val maxRight = remember(points) { points.maxByOrNull { it.leanAngle }?.leanAngle ?: 0f }
+    val avgSpeed = remember(points) { if (points.isNotEmpty()) points.map { it.speedKmh }.average() else 0.0 }
+
+    val startTs  = points.firstOrNull()?.timestamp ?: 0L
+    val endTs    = points.lastOrNull()?.timestamp  ?: 0L
+    val durMs    = if (endTs > startTs) endTs - startTs else 0L
+    val durStr   = if (durMs > 0) { val h = durMs/3600000; val m = (durMs%3600000)/60000; if (h>0) "${h}h ${m}m" else "${m}m" } else "--"
+    val dateStr  = remember(startTs) { java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.getDefault()).format(java.util.Date(startTs)) }
 
     if (showDiscardDialog) {
         AlertDialog(
             onDismissRequest = { showDiscardDialog = false },
             containerColor = SurfaceCard,
             title = { Text("Discard Session?", style = MaterialTheme.typography.titleLarge) },
-            text = { Text("Are you sure you want to discard this data? It will be lost forever.", style = MaterialTheme.typography.bodyLarge) },
-            confirmButton = {
-                TextButton(onClick = onDiscard) {
-                    Text("DISCARD", color = AlertRed, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDiscardDialog = false }) {
-                    Text("CANCEL", style = MaterialTheme.typography.bodyLarge, color = PureWhite)
-                }
-            }
+            text = { Text("This session will be lost forever.", style = MaterialTheme.typography.bodyLarge) },
+            confirmButton = { TextButton(onClick = onDiscard) { Text("DISCARD", color = AlertRed, fontWeight = FontWeight.Bold) } },
+            dismissButton = { TextButton(onClick = { showDiscardDialog = false }) { Text("CANCEL", color = PureWhite) } }
         )
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(DeepCarbon)
-    ) {
+    Box(modifier = Modifier.fillMaxSize().background(DeepCarbon)) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "SESSION SUMMARY",
-                    style = MaterialTheme.typography.titleSmall.copy(
-                        fontFamily = Inter,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    ),
-                    color = highlightColor
-                )
-
-                val startTime = points.firstOrNull()?.timestamp ?: 0L
-                val endTime = points.lastOrNull()?.timestamp ?: 0L
-                
-                val summaryDateFormat = remember { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()) }
-                val summaryTimeFormat = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
-                
-                val summaryDateStr = if (startTime > 0L) summaryDateFormat.format(java.util.Date(startTime)) else ""
-                val summaryStartTimeStr = if (startTime > 0L) summaryTimeFormat.format(java.util.Date(startTime)) else "--:--"
-                val summaryEndTimeStr = if (endTime > 0L) summaryTimeFormat.format(java.util.Date(endTime)) else "--:--"
-                
-                if (summaryDateStr.isNotEmpty()) {
-                    Column(
-                        horizontalAlignment = Alignment.End,
-                        modifier = Modifier.padding(end = 4.dp)
-                    ) {
-                        Text(
-                            text = "$summaryDateStr",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                            color = PureWhite
-                        )
-                        Text(
-                            text = "$summaryStartTimeStr - $summaryEndTimeStr",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MutedGrey
-                        )
-                    }
+            // ── Header ──
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("RIDE COMPLETE",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontFamily = Inter, fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
+                        color = highlightColor)
+                    Text(dateStr,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = Rajdhani),
+                        color = MutedGrey)
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = BorderDivider)
 
-            val totalDistanceRaw = points.sumOf { it.distanceDelta } / 1000.0 // km
-            val totalDistance = if (isMetric) totalDistanceRaw else totalDistanceRaw * 0.621371
-            val maxSpeedRaw = points.maxByOrNull { it.speedKmh }?.speedKmh ?: 0.0
-            val maxSpeed = if (isMetric) maxSpeedRaw else maxSpeedRaw * 0.621371
-            val maxLeft = points.minByOrNull { it.leanAngle }?.leanAngle ?: 0f
-            val maxRight = points.maxByOrNull { it.leanAngle }?.leanAngle ?: 0f
-            val maxPitch = points.maxByOrNull { it.pitchAngle }?.pitchAngle ?: 0f
-
-            val configuration = LocalConfiguration.current
-            val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-            if (isLandscape) {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1.2f)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SummaryStatsGrid(
-                            totalDistance = totalDistance,
-                            maxSpeed = maxSpeed,
-                            maxLeanLeft = maxLeft,
-                            maxLeanRight = maxRight,
-                            maxPitch = maxPitch,
-                            cornersCount = corners.size,
-                            isMetric = isMetric,
-                            highlightColor = highlightColor,
-                            isLandscape = true,
-                            modifier = Modifier.weight(1.5f)
-                        )
-
-                        // Embedded Vector Map in Left Column (Landscape)
-                        if (mapView != null && points.isNotEmpty()) {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                androidx.compose.ui.viewinterop.AndroidView(
-                                    factory = {
-                                        mapView.apply {
-                                            getMapAsync { maplibreMap ->
-                                                maplibreMap.clear()
-                                                val latLngs = points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
-                                                maplibreMap.addPolyline(
-                                                    org.maplibre.android.annotations.PolylineOptions()
-                                                        .addAll(latLngs)
-                                                        .color(highlightColor.toArgb())
-                                                        .width(5f)
-                                                )
-                                                val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
-                                                latLngs.forEach { boundsBuilder.include(it) }
-                                                try {
-                                                    maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
-                                                } catch (e: Exception) {
-                                                    val avgLat = latLngs.map { it.latitude }.average()
-                                                    val avgLng = latLngs.map { it.longitude }.average()
-                                                    maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
-                                                }
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        } else {
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
-                    }
-                    Column(
-                        modifier = Modifier
-                            .weight(1.5f)
-                            .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1f))
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    SummaryStatsGrid(
-                        totalDistance = totalDistance,
-                        maxSpeed = maxSpeed,
-                        maxLeanLeft = maxLeft,
-                        maxLeanRight = maxRight,
-                        maxPitch = maxPitch,
-                        cornersCount = corners.size,
-                        isMetric = isMetric,
-                        highlightColor = highlightColor,
-                        isLandscape = false,
-                        modifier = Modifier.weight(0.7f)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Embedded Vector Map in Scrollable Content (Portrait)
-                    if (mapView != null && points.isNotEmpty()) {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(0.8f),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            androidx.compose.ui.viewinterop.AndroidView(
-                                factory = {
-                                    mapView.apply {
-                                        getMapAsync { maplibreMap ->
-                                            maplibreMap.clear()
-                                            val latLngs = points.map { org.maplibre.android.geometry.LatLng(it.latitude, it.longitude) }
-                                            maplibreMap.addPolyline(
-                                                org.maplibre.android.annotations.PolylineOptions()
-                                                    .addAll(latLngs)
-                                                    .color(highlightColor.toArgb())
-                                                    .width(5f)
-                                            )
-                                            val boundsBuilder = org.maplibre.android.geometry.LatLngBounds.Builder()
-                                            latLngs.forEach { boundsBuilder.include(it) }
-                                            try {
-                                                maplibreMap.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 40))
-                                            } catch (e: Exception) {
-                                                val avgLat = latLngs.map { it.latitude }.average()
-                                                val avgLng = latLngs.map { it.longitude }.average()
-                                                maplibreMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(avgLat, avgLng), 14.0))
-                                            }
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
-
-                    SummaryGraphs(points, isMetric, highlightColor, mutedHighlightColor, modifier = Modifier.weight(1.5f))
-                }
+            // ── Quick stats row ──
+            Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                QuickStatCard("${"%.1f".format(totalDistance)}", distUnit, Modifier.weight(1f))
+                QuickStatCard(durStr, "DURATION", Modifier.weight(1f))
+                QuickStatCard("${maxSpeed.toInt()}", speedUnit, Modifier.weight(1f))
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Bottom Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = { showDiscardDialog = false; onDiscard() },
-                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard),
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider)
-                ) {
-                    Text("DISCARD", style = MaterialTheme.typography.labelLarge, color = PureWhite)
-                }
-
-                Button(
-                    onClick = onSave,
-                    colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
-                    modifier = Modifier.weight(1f).height(48.dp),
+            // ── Route thumbnail ──
+            if (points.size >= 2) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().height(140.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF070908)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("SAVE SESSION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    Canvas(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+                        val minLat = points.minOf { it.latitude };  val maxLat = points.maxOf { it.latitude }
+                        val minLng = points.minOf { it.longitude }; val maxLng = points.maxOf { it.longitude }
+                        val latR = (maxLat - minLat).coerceAtLeast(0.0001)
+                        val lngR = (maxLng - minLng).coerceAtLeast(0.0001)
+                        val latCorr = kotlin.math.cos(Math.toRadians((minLat + maxLat) / 2)).toFloat()
+                        val gpsAsp = (lngR * latCorr / latR).toFloat()
+                        val scrAsp = size.width / size.height
+                        val scX: Float; val scY: Float; val ox: Float; val oy: Float
+                        if (gpsAsp > scrAsp) { scX = size.width; scY = size.width / gpsAsp; ox = 0f; oy = (size.height - scY) / 2 }
+                        else { scY = size.height; scX = size.height * gpsAsp; oy = 0f; ox = (size.width - scX) / 2 }
+                        fun px(lng: Double) = (ox + ((lng - minLng) / lngR * scX)).toFloat()
+                        fun py(lat: Double) = (oy + ((maxLat - lat) / latR * scY)).toFloat()
+                        // Grid
+                        val gs = 30.dp.toPx()
+                        var gx = 0f; while (gx <= size.width)  { drawLine(Color(0xFF111610), Offset(gx, 0f), Offset(gx, size.height), 0.5.dp.toPx()); gx += gs }
+                        var gy = 0f; while (gy <= size.height) { drawLine(Color(0xFF111610), Offset(0f, gy), Offset(size.width, gy), 0.5.dp.toPx()); gy += gs }
+                        // Road
+                        val road = Path()
+                        points.forEachIndexed { i, p -> if (i==0) road.moveTo(px(p.longitude), py(p.latitude)) else road.lineTo(px(p.longitude), py(p.latitude)) }
+                        drawPath(road, Color(0xFF1A2218), style = Stroke(12.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                        // Route
+                        val route = Path()
+                        points.forEachIndexed { i, p -> if (i==0) route.moveTo(px(p.longitude), py(p.latitude)) else route.lineTo(px(p.longitude), py(p.latitude)) }
+                        drawPath(route, highlightColor.copy(alpha = 0.9f), style = Stroke(2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                        // Dots
+                        points.firstOrNull()?.let { drawCircle(MutedGrey, 4.dp.toPx(), Offset(px(it.longitude), py(it.latitude))) }
+                        points.lastOrNull()?.let  { drawCircle(highlightColor, 4.dp.toPx(), Offset(px(it.longitude), py(it.latitude))) }
+                    }
+                }
+            }
+
+            // ── MAX LEAN hero section ──
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0E130D)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("MAX LEAN",
+                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.5.sp),
+                        color = MutedGrey)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("${abs(maxLeft).toInt()}°",
+                                style = MaterialTheme.typography.displayMedium.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold),
+                                color = AlertRed)
+                            Text("LEFT", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp), color = MutedGrey)
+                        }
+                        Box(modifier = Modifier.width(1.dp).height(56.dp).background(BorderDivider))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("${maxRight.toInt()}°",
+                                style = MaterialTheme.typography.displayMedium.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold),
+                                color = highlightColor)
+                            Text("RIGHT", style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp), color = MutedGrey)
+                        }
+                    }
+                }
+            }
+
+            // ── Secondary stats ──
+            Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OverlayStatCard("CORNERS", corners.size.toString(), highlightColor, Modifier.weight(1f))
+                OverlayStatCard("AVG SPEED", "${(if (isMetric) avgSpeed else avgSpeed * 0.621371).toInt()} $speedUnit", PureWhite, Modifier.weight(1f))
+                OverlayStatCard("DATA PTS", points.size.toString(), MidGrey, Modifier.weight(1f))
+            }
+
+            // ── Lean symmetry ──
+            if (maxLeft != 0f || maxRight != 0f) {
+                LeanSymmetryCard(leftMax = abs(maxLeft), rightMax = maxRight, highlightColor = highlightColor)
+            }
+
+            // ── Corner breakdown ──
+            if (corners.isNotEmpty()) {
+                CornerBreakdownCard(corners = corners, points = points, isMetric = isMetric, highlightColor = highlightColor)
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // ── Save / Discard ──
+            Button(
+                onClick = onSave,
+                colors = ButtonDefaults.buttonColors(containerColor = highlightColor, contentColor = DeepCarbon),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("SAVE SESSION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            }
+            TextButton(
+                onClick = { showDiscardDialog = true },
+                modifier = Modifier.fillMaxWidth().height(40.dp)
+            ) {
+                Text("DISCARD", style = MaterialTheme.typography.labelMedium, color = MutedGrey)
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickStatCard(value: String, label: String, modifier: Modifier = Modifier) {
+    Card(modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(modifier = Modifier.padding(10.dp).fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(value, style = MaterialTheme.typography.titleLarge.copy(fontFamily = Rajdhani, fontWeight = FontWeight.Bold),
+                color = PureWhite, textAlign = TextAlign.Center)
+            Text(label.uppercase(), style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.5.sp),
+                color = MutedGrey, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+fun LeanSymmetryCard(leftMax: Float, rightMax: Float, highlightColor: Color) {
+    val total = leftMax + rightMax
+    val leftRatio = if (total > 0f) leftMax / total else 0.5f
+    val rightRatio = if (total > 0f) rightMax / total else 0.5f
+    val imbalancePct = if (total > 0f) (kotlin.math.abs(leftMax - rightMax) / total * 100).toInt() else 0
+    val weakSide = when {
+        leftMax < rightMax * 0.85f -> "left"
+        rightMax < leftMax * 0.85f -> "right"
+        else -> null
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("LEAN SYMMETRY", style = MaterialTheme.typography.labelSmall,
+                    color = highlightColor, letterSpacing = 1.sp)
+                Text("$imbalancePct% imbalance", style = MaterialTheme.typography.labelSmall,
+                    color = MutedGrey)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("L ${leftMax.toInt()}°", style = MaterialTheme.typography.labelMedium,
+                    color = AlertRed, modifier = Modifier.width(44.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                Spacer(Modifier.width(8.dp))
+                Box(modifier = Modifier.weight(1f).height(14.dp).clip(RoundedCornerShape(7.dp))
+                    .background(SurfaceCard)) {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Box(modifier = Modifier.weight(leftRatio).fillMaxHeight()
+                            .background(AlertRed.copy(alpha = 0.8f)))
+                        Box(modifier = Modifier.weight(rightRatio).fillMaxHeight()
+                            .background(highlightColor.copy(alpha = 0.8f)))
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("${rightMax.toInt()}° R", style = MaterialTheme.typography.labelMedium,
+                    color = highlightColor, modifier = Modifier.width(44.dp))
+            }
+            if (weakSide != null) {
+                Spacer(Modifier.height(6.dp))
+                Text("Your $weakSide lean is weaker — focus on ${weakSide}-handers",
+                    style = MaterialTheme.typography.bodySmall, color = MutedGrey)
+            }
+        }
+    }
+}
+
+@Composable
+fun CornerBreakdownCard(
+    corners: List<CornerEvent>,
+    points: List<TelemetryPoint>,
+    isMetric: Boolean,
+    highlightColor: Color
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderDivider),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text("CORNERS", style = MaterialTheme.typography.labelSmall,
+                color = highlightColor, letterSpacing = 1.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text("#", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.width(24.dp))
+                Text("DIR", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.width(36.dp))
+                Text("LEAN", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.weight(1f))
+                Text("SPEED", style = MaterialTheme.typography.labelSmall, color = MutedGrey,
+                    modifier = Modifier.width(56.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+            }
+            Spacer(Modifier.height(4.dp))
+            val display = corners.takeLast(10)
+            display.forEachIndexed { i, corner ->
+                val maxLean = maxOf(abs(corner.maxLeftLean), corner.maxRightLean)
+                val dir = if (abs(corner.maxLeftLean) > corner.maxRightLean) "L" else "R"
+                val dirColor = if (dir == "L") AlertRed else highlightColor
+                val speedRaw = points.getOrNull(corner.maxLeanIndex)?.speedKmh ?: 0.0
+                val speed = if (isMetric) speedRaw else speedRaw * 0.621371
+                val speedUnit = if (isMetric) "km/h" else "mph"
+                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("${corners.size - display.size + i + 1}", style = MaterialTheme.typography.labelSmall,
+                        color = MutedGrey, modifier = Modifier.width(24.dp))
+                    Text(dir, style = MaterialTheme.typography.labelMedium, color = dirColor,
+                        fontWeight = FontWeight.Bold, modifier = Modifier.width(36.dp))
+                    Text("${maxLean.toInt()}°", style = MaterialTheme.typography.labelMedium,
+                        color = PureWhite, modifier = Modifier.weight(1f))
+                    Text("${speed.toInt()} $speedUnit", style = MaterialTheme.typography.labelSmall,
+                        color = MutedGrey, modifier = Modifier.width(56.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End)
                 }
             }
         }
@@ -1153,6 +1567,175 @@ fun SummaryGraphs(
     }
 }
 
+enum class CornerSpeedFilter { ALL, SLOW, MEDIUM, HIGH }
+
+private fun maxLeanForFilter(session: RideSession, filter: CornerSpeedFilter): Float {
+    if (filter == CornerSpeedFilter.ALL) return maxOf(abs(session.maxLeanLeft), session.maxLeanRight)
+    val filtered = session.corners.filter { c ->
+        val speed = session.points.getOrNull(c.maxLeanIndex)?.speedKmh ?: 0.0
+        when (filter) {
+            CornerSpeedFilter.SLOW   -> speed < 60.0
+            CornerSpeedFilter.MEDIUM -> speed >= 60.0 && speed < 120.0
+            CornerSpeedFilter.HIGH   -> speed >= 120.0
+            CornerSpeedFilter.ALL    -> true
+        }
+    }
+    return filtered.maxOfOrNull { maxOf(abs(it.maxLeftLean), it.maxRightLean) } ?: 0f
+}
+
+@Composable
+private fun SpeedFilterChip(
+    label: String,
+    filter: CornerSpeedFilter,
+    selected: CornerSpeedFilter,
+    highlightColor: Color,
+    onSelect: (CornerSpeedFilter) -> Unit
+) {
+    val isSelected = filter == selected
+    Box(
+        modifier = Modifier
+            .background(
+                if (isSelected) highlightColor.copy(alpha = 0.14f) else Color.Transparent,
+                androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+            )
+            .border(
+                androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    if (isSelected) highlightColor.copy(alpha = 0.55f) else BorderDivider
+                ),
+                androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+            )
+            .clickable { onSelect(filter) }
+            .padding(horizontal = 9.dp, vertical = 4.dp)
+    ) {
+        Text(
+            label,
+            fontSize = 10.sp, letterSpacing = 0.8.sp,
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (isSelected) highlightColor else MutedGrey
+        )
+    }
+}
+
+@Composable
+private fun SessionTrendSection(
+    currentSessionId: String,
+    sessions: List<RideSession>,
+    highlightColor: Color
+) {
+    var speedFilter by remember { mutableStateOf(CornerSpeedFilter.ALL) }
+
+    val currentIdx = sessions.indexOfFirst { it.id == currentSessionId }
+    val leanValues = remember(sessions, speedFilter) {
+        sessions.map { maxLeanForFilter(it, speedFilter) }
+    }
+
+    val filterHint = when (speedFilter) {
+        CornerSpeedFilter.SLOW   -> "apex < 60 km/h"
+        CornerSpeedFilter.MEDIUM -> "apex 60–120 km/h"
+        CornerSpeedFilter.HIGH   -> "apex > 120 km/h"
+        CornerSpeedFilter.ALL    -> null
+    }
+
+    Column(
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Header row: title + filter chips
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("PERFORMANCE TREND", fontSize = 11.sp, letterSpacing = 2.sp, color = MutedGrey)
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                SpeedFilterChip("ALL",  CornerSpeedFilter.ALL,    speedFilter, highlightColor) { speedFilter = it }
+                SpeedFilterChip("SLOW", CornerSpeedFilter.SLOW,   speedFilter, highlightColor) { speedFilter = it }
+                SpeedFilterChip("MED",  CornerSpeedFilter.MEDIUM, speedFilter, highlightColor) { speedFilter = it }
+                SpeedFilterChip("FAST", CornerSpeedFilter.HIGH,   speedFilter, highlightColor) { speedFilter = it }
+            }
+        }
+
+        // Active filter hint
+        if (filterHint != null) {
+            Text(
+                filterHint,
+                fontSize = 9.sp, letterSpacing = 0.4.sp,
+                color = MutedGrey.copy(alpha = 0.65f),
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+            )
+        }
+
+        MiniSparkline(
+            label = "MAX LEAN",
+            values = leanValues,
+            unit = "°",
+            currentIdx = currentIdx,
+            color = highlightColor,
+            noDataLabel = if (speedFilter != CornerSpeedFilter.ALL) "No corners" else null
+        )
+    }
+}
+
+@Composable
+private fun MiniSparkline(
+    label: String,
+    values: List<Float>,
+    unit: String,
+    currentIdx: Int,
+    color: Color,
+    noDataLabel: String? = null
+) {
+    val allZero = values.all { it == 0f }
+    val minV = values.minOrNull() ?: 0f
+    val maxV = values.maxOrNull() ?: 1f
+    val range = (maxV - minV).coerceAtLeast(1f)
+
+    Row(verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(label, fontSize = 9.sp, letterSpacing = 1.sp, color = MutedGrey,
+            modifier = Modifier.width(68.dp))
+        Box(modifier = Modifier.weight(1f).height(36.dp)) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width; val h = size.height
+                val step = if (values.size > 1) w / (values.size - 1) else w
+
+                drawRect(Color(0xFF0B0F0A))
+
+                if (!allZero) {
+                    val path = Path()
+                    values.forEachIndexed { i, v ->
+                        val x = i * step
+                        val y = h * 0.9f - ((v - minV) / range) * h * 0.8f
+                        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                    }
+                    drawPath(path, color, style = Stroke(1.5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+
+                    if (currentIdx >= 0) {
+                        val cx = currentIdx * step
+                        val cv = values[currentIdx]
+                        val cy = h * 0.9f - ((cv - minV) / range) * h * 0.8f
+                        drawCircle(color.copy(alpha = 0.2f), 10.dp.toPx(), Offset(cx, cy))
+                        drawCircle(color, 3.5.dp.toPx(), Offset(cx, cy))
+                    }
+                }
+            }
+            if (allZero && noDataLabel != null) {
+                Text(
+                    noDataLabel,
+                    fontSize = 9.sp, color = MutedGrey.copy(alpha = 0.5f), letterSpacing = 0.5.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+        }
+        val displayVal = if (allZero) 0 else if (currentIdx >= 0) values[currentIdx].toInt() else values.last().toInt()
+        val displayText = if (allZero && noDataLabel != null) "–" else "$displayVal$unit"
+        Text(displayText, fontSize = 11.sp, fontFamily = Rajdhani,
+            fontWeight = FontWeight.Bold, color = if (allZero) MutedGrey else color,
+            modifier = Modifier.width(52.dp), textAlign = TextAlign.End)
+    }
+}
+
 @Preview(showBackground = true, widthDp = 400, heightDp = 800)
 @Composable
 fun SessionSummaryPortraitPreview() {
@@ -1167,7 +1750,7 @@ fun SessionSummaryPortraitPreview() {
             distanceDelta = 10.0
         )
     }
-    RideTrackerTheme {
+    LeansterTheme {
         Box(modifier = Modifier.fillMaxSize().background(DeepBase)) {
             SessionSummaryScreen(mockPoints, emptyList(), true, {}, {})
         }
@@ -1188,7 +1771,7 @@ fun SessionSummaryLandscapePreview() {
             distanceDelta = 10.0
         )
     }
-    RideTrackerTheme {
+    LeansterTheme {
         Box(modifier = Modifier.fillMaxSize().background(DeepBase)) {
             SessionSummaryScreen(mockPoints, emptyList(), true, {}, {})
         }
@@ -1210,7 +1793,7 @@ fun HistoryMenuLandscapePreview() {
             maxPitch = 15f
         )
     }
-    RideTrackerTheme {
+    LeansterTheme {
         HistoryMenuScreen(
             sessions = mockSessions,
             onBack = {},

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_bg_dark">#0B0E14</color>
+    <color name="ic_bg_kawasaki">#4A8A00</color>
+    <color name="ic_bg_ducati">#CC1A35</color>
+    <color name="ic_bg_yamaha">#1255CC</color>
+    <color name="ic_bg_ktm">#CC3C00</color>
+    <color name="ic_bg_honda">#AA0000</color>
+    <color name="ic_bg_bmw">#00519A</color>
+    <color name="ic_bg_triumph">#9A7A00</color>
+    <color name="ic_bg_husqvarna">#222222</color>
+    <color name="ic_bg_cyan">#00B89E</color>
+    <color name="ic_bg_white">#0B0E14</color>
+</resources>
