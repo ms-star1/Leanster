@@ -6,6 +6,11 @@ import android.content.pm.PackageManager
 
 object AppIconSwitcher {
 
+    // Icon aliases are declared in the manifest with relative names (".icon.Kawasaki"),
+    // so their component classes resolve against the namespace — NOT the applicationId,
+    // which differs (com.ridetracker.ride). Always build class names from the namespace.
+    private const val ICON_PKG = "com.beispiel.ridetracker.icon"
+
     private val allBrands = listOf(
         "Kawasaki", "Ducati", "Yamaha", "KTM", "Honda",
         "BMW", "Triumph", "Husqvarna", "Cyan", "White"
@@ -17,7 +22,7 @@ object AppIconSwitcher {
         val target = normalise(colorName)
 
         // Enable target first so the launcher always has one active entry
-        val enableName = ComponentName(pkg, "$pkg.icon.$target")
+        val enableName = ComponentName(pkg, "$ICON_PKG.$target")
         pm.setComponentEnabledSetting(
             enableName,
             PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
@@ -28,7 +33,7 @@ object AppIconSwitcher {
         for (brand in allBrands) {
             if (brand != target) {
                 pm.setComponentEnabledSetting(
-                    ComponentName(pkg, "$pkg.icon.$brand"),
+                    ComponentName(pkg, "$ICON_PKG.$brand"),
                     PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                     PackageManager.DONT_KILL_APP
                 )
