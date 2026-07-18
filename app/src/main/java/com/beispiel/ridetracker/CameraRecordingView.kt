@@ -1,5 +1,7 @@
 package com.beispiel.ridetracker
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.graphics.Paint
@@ -238,9 +240,16 @@ private fun startRecording(
     val file = File(dir, "Leanster_$stamp.mp4")
     val outputOptions = FileOutputOptions.Builder(file).build()
 
-    // TODO: audio — needs RECORD_AUDIO permission + .withAudioEnabled() before .start().
-    val recording = videoCapture.output
-        .prepareRecording(context, outputOptions)
+    val pendingRecording = videoCapture.output.prepareRecording(context, outputOptions)
+    // Enable the mic only when granted — withAudioEnabled() throws a SecurityException otherwise.
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+        == PackageManager.PERMISSION_GRANTED
+    ) {
+        pendingRecording.withAudioEnabled()
+    } else {
+        Log.w(TAG, "RECORD_AUDIO not granted — recording video without audio")
+    }
+    val recording = pendingRecording
         .start(ContextCompat.getMainExecutor(context)) { event ->
             when (event) {
                 is VideoRecordEvent.Start -> hud.recording = true
